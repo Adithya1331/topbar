@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 
 namespace TopBar;
 
@@ -33,6 +34,8 @@ internal static class Program
     private static readonly Dictionary<uint, nint> s_brushCache = [];
     private static nint s_borderPen;
     private static bool s_trimmed;
+    private static int s_boxLeft;
+    private static int s_boxRight;
 
     private static int Main()
     {
@@ -207,10 +210,28 @@ internal static class Program
     private static void OnSettingsSaved()
     {
         ApplyHotkeys();
+        ApplyAutostart();
         RestartTimer();
         MoveAppBar(s_hwnd);
         _ = RefreshAsync();
         _ = Native.InvalidateRect(s_hwnd, default, true);
+    }
+
+    private static void ApplyAutostart()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true);
+            if (key == null) return;
+            if (s_settings.StartWithWindows && Environment.ProcessPath is { Length: > 0 } path)
+                key.SetValue("MonkeyBar", $"\"{path}\"");
+            else
+                key.DeleteValue("MonkeyBar", false);
+        }
+        catch
+        {
+        }
     }
 
     private static void ShowMenu()
@@ -267,6 +288,12 @@ internal static class Program
         }
     }
 
+    private static bool IsOverBoxes(nint lParam)
+    {
+        int x = (short)(lParam & 0xFFFF);
+        return s_boxRight > s_boxLeft && x >= s_boxLeft - 2 && x <= s_boxRight + 2;
+    }
+
     private static void AppendDisabled(nint menu, string text)
     {
         _ = Native.AppendMenuW(menu, Native.MF_STRING | Native.MF_GRAYED, 0, text);
@@ -281,11 +308,11 @@ internal static class Program
                 return default;
 
             case Native.WM_LBUTTONUP:
-                ShowMenu();
+                if (IsOverBoxes(lParam)) OpenMonkeytype();
                 return default;
 
             case Native.WM_RBUTTONUP:
-                OpenMonkeytype();
+                if (IsOverBoxes(lParam)) ShowMenu();
                 return default;
 
             case Native.WM_TIMER:
@@ -379,6 +406,8 @@ internal static class Program
             int y = ((rc.Bottom - rc.Top) - BOX_SIZE) / 2;
             int totalW = days * BOX_SIZE + (days - 1) * BOX_GAP;
             int x = rc.Right - 12 - totalW;
+            s_boxLeft = x;
+            s_boxRight = x + totalW;
 
             for (int i = 0; i < days; i++)
             {

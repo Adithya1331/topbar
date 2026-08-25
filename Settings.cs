@@ -1,6 +1,13 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace TopBar;
+
+[JsonSourceGenerationOptions(WriteIndented = true)]
+[JsonSerializable(typeof(Settings))]
+internal sealed partial class AppJsonContext : JsonSerializerContext
+{
+}
 
 internal sealed class Settings
 {
@@ -9,6 +16,7 @@ internal sealed class Settings
     public int RefreshInterval { get; set; } = 21600;
     public int DaysToShow { get; set; } = 7;
     public int BarHeight { get; set; } = 32;
+    public bool StartWithWindows { get; set; }
     public bool ShowCurrentWeekOnly { get; set; }
     public int WeekStartDay { get; set; } = 1;
     public bool HighlightCurrentDay { get; set; }
@@ -43,7 +51,7 @@ internal sealed class Settings
         {
             if (File.Exists(FilePath))
             {
-                var s = JsonSerializer.Deserialize<Settings>(File.ReadAllText(FilePath));
+                var s = JsonSerializer.Deserialize(File.ReadAllText(FilePath), AppJsonContext.Default.Settings);
                 if (s != null)
                 {
                     s.Normalize();
@@ -61,6 +69,6 @@ internal sealed class Settings
     {
         Normalize();
         Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-        File.WriteAllText(FilePath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(FilePath, JsonSerializer.Serialize(this, AppJsonContext.Default.Settings));
     }
 }

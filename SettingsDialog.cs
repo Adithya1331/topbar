@@ -16,6 +16,7 @@ internal static class SettingsDialog
     private const int IDC_GETKEY = 111;
     private const int IDC_HIGHLIGHT = 105;
     private const int IDC_WEEKONLY = 106;
+    private const int IDC_AUTOSTART = 112;
 
     private const int CTL_USER = 101;
     private const int CTL_KEY = 102;
@@ -191,25 +192,26 @@ internal static class SettingsDialog
 
         AddControl(hwnd, "BUTTON", "Highlight current day", Native.BS_AUTOCHECKBOX, 0, cx, 224, cw, 20, IDC_HIGHLIGHT, font);
         AddControl(hwnd, "BUTTON", "Show current week only", Native.BS_AUTOCHECKBOX, 0, cx, 250, cw, 20, IDC_WEEKONLY, font);
+        AddControl(hwnd, "BUTTON", "Start with Windows (launch at login)", Native.BS_AUTOCHECKBOX, 0, cx, 276, cw, 20, IDC_AUTOSTART, font);
 
-        Label(hwnd, "Week Starts On", lx, 282, font, 204);
-        Combo(hwnd, CTL_WEEKSTART, cx, 278, font);
+        Label(hwnd, "Week Starts On", lx, 308, font, 204);
+        Combo(hwnd, CTL_WEEKSTART, cx, 304, font);
 
-        Label(hwnd, "Color Mode", lx, 314, font, 205);
-        Combo(hwnd, CTL_MODE, cx, 310, font);
+        Label(hwnd, "Color Mode", lx, 340, font, 205);
+        Combo(hwnd, CTL_MODE, cx, 336, font);
 
-        Label(hwnd, "Theme", lx, 346, font, 206);
-        Combo(hwnd, CTL_THEME, cx, 342, font);
+        Label(hwnd, "Theme", lx, 372, font, 206);
+        Combo(hwnd, CTL_THEME, cx, 368, font);
 
-        Label(hwnd, "Right-click Action", lx, 378, font, 207);
-        Combo(hwnd, CTL_ACTION, cx, 374, font);
+        Label(hwnd, "Left-click Action", lx, 404, font, 207);
+        Combo(hwnd, CTL_ACTION, cx, 400, font);
 
-        AddControl(hwnd, "BUTTON", "Save", Native.BS_DEFPUSHBUTTON, 0, cx, 412, 100, 30, IDC_SAVE, font);
-        AddControl(hwnd, "BUTTON", "Cancel", Native.BS_PUSHBUTTON, 0, cx + 110, 412, 100, 30, IDC_CANCEL, font);
+        AddControl(hwnd, "BUTTON", "Save", Native.BS_DEFPUSHBUTTON, 0, cx, 438, 100, 30, IDC_SAVE, font);
+        AddControl(hwnd, "BUTTON", "Cancel", Native.BS_PUSHBUTTON, 0, cx + 110, 438, 100, 30, IDC_CANCEL, font);
 
         AddControl(hwnd, "STATIC",
             "Hotkeys: Win+Shift+R refresh · Win+Shift+M open Monkeytype · Win+Shift+P profile",
-            0, 0, lx, 456, 468, 32, 208, font);
+            0, 0, lx, 482, 468, 32, 208, font);
 
         FillCombo(s_ctl[CTL_INTERVAL], IntervalLabels, Array.IndexOf(Intervals, s_settings.RefreshInterval));
         FillCombo(s_ctl[CTL_DAYS], ["1", "2", "3", "4", "5", "6", "7"], s_settings.DaysToShow - 1);
@@ -223,6 +225,7 @@ internal static class SettingsDialog
         _ = Native.SendMessageW(s_ctl[CTL_KEY], WM_SETTEXT, 0, s_settings.ApeKey);
         _ = Native.SendMessageW(s_ctl[IDC_HIGHLIGHT], Native.BM_SETCHECK, s_settings.HighlightCurrentDay ? Native.BST_CHECKED : 0, 0);
         _ = Native.SendMessageW(s_ctl[IDC_WEEKONLY], Native.BM_SETCHECK, s_settings.ShowCurrentWeekOnly ? Native.BST_CHECKED : 0, 0);
+        _ = Native.SendMessageW(s_ctl[IDC_AUTOSTART], Native.BM_SETCHECK, s_settings.StartWithWindows ? Native.BST_CHECKED : 0, 0);
         Native.EnableWindow(s_ctl[CTL_WEEKSTART], s_settings.ShowCurrentWeekOnly);
     }
 
@@ -247,6 +250,7 @@ internal static class SettingsDialog
         if (actionIdx >= 0) s_settings.RightClickAction = actionIdx == 1 ? "profile" : "homepage";
         s_settings.HighlightCurrentDay = IsChecked(IDC_HIGHLIGHT);
         s_settings.ShowCurrentWeekOnly = IsChecked(IDC_WEEKONLY);
+        s_settings.StartWithWindows = IsChecked(IDC_AUTOSTART);
 
         s_settings.Save();
         s_onSaved?.Invoke();

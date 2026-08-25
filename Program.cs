@@ -27,9 +27,12 @@ internal static class Program
     private static readonly Native.WndProc s_wndProc = WndProc;
     private static nint s_hwnd;
     private static uint s_taskbarCreated;
-    private static readonly object s_gate = new();
-    private static readonly ActivityState s_state = new();
+    private static ActivityState s_state = new();
     private static Settings s_settings = new();
+    private static int s_lastMinute = -1;
+    private static readonly Dictionary<uint, nint> s_brushCache = [];
+    private static nint s_borderPen;
+    private static bool s_trimmed;
 
     private static int Main()
     {
@@ -124,26 +127,35 @@ internal static class Program
 
     private static async Task RefreshAsync()
     {
-        Settings snap;
-        lock (s_gate) snap = s_settings.Clone();
+        Settings snap = s_settings.Clone();
         try
         {
             var st = await MonkeytypeService.FetchTypingActivityAsync(snap);
-            lock (s_gate)
-            {
-                s_state.HasData = st.HasData;
-                s_state.IsStreakOnly = st.IsStreakOnly;
-                s_state.Streak = st.Streak;
-                s_state.MaxStreak = st.MaxStreak;
-                s_state.Dates = st.Dates;
-                s_state.Counts = st.Counts;
-            }
+            s_state = st;
         }
         catch
         {
-            lock (s_gate) s_state.HasData = false;
+            s_state = new ActivityState { HasData = false, Dates = s_state.Dates, Counts = s_state.Counts };
         }
+        TrimWorkingSet();
         Native.PostMessageW(s_hwnd, WM_APP_REFRESH, 0, 0);
+    }
+
+    private static void TrimWorkingSet()
+    {
+        if (s_trimmed) return;
+        s_trimmed = true;
+        _ = Native.SetProcessWorkingSetSize(Native.GetCurrentProcess(), -1, -1);
+    }
+
+    private static nint GetBrush(uint color)
+    {
+        if (!s_brushCache.TryGetValue(color, out nint b))
+        {
+            b = Native.CreateSolidBrush(color);
+            s_brushCache[color] = b;
+        }
+        return b;
     }
 
     private static void RestartTimer()
@@ -204,8 +216,7 @@ internal static class Program
     private static void ShowMenu()
     {
         nint menu = Native.CreatePopupMenu();
-        ActivityState st;
-        lock (s_gate) st = s_state.Clone();
+        ActivityState st = s_state;
 
         if (!st.HasData)
         {
@@ -279,7 +290,15 @@ internal static class Program
 
             case Native.WM_TIMER:
                 if (wParam == (nuint)TIMER_REFRESH) _ = RefreshAsync();
-                else if (wParam == (nuint)TIMER_CLOCK) _ = Native.InvalidateRect(hwnd, default, false);
+                else if (wParam == (nuint)TIMER_CLOCK)
+                {
+                    int m = DateTime.Now.Minute;
+                    if (m != s_lastMinute)
+                    {
+                        s_lastMinute = m;
+                        _ = Native.InvalidateRect(hwnd, default, false);
+                    }
+                }
                 return default;
 
             case WM_APP_REFRESH:
@@ -312,6 +331,13 @@ internal static class Program
                 Native.UnregisterHotKey(hwnd, HK_PROFILE);
                 Native.KillTimer(hwnd, TIMER_REFRESH);
                 Native.KillTimer(hwnd, TIMER_CLOCK);
+                foreach (nint b in s_brushCache.Values) Native.DeleteObject(b);
+                s_brushCache.Clear();
+                if (s_borderPen != default)
+                {
+                    Native.DeleteObject(s_borderPen);
+                    s_borderPen = default;
+                }
                 Native.PostQuitMessage(0);
                 return default;
 
@@ -343,13 +369,10 @@ internal static class Program
         try
         {
             _ = Native.GetClientRect(hwnd, out Native.RECT rc);
-            nint bgBrush = Native.CreateSolidBrush(BAR_BG);
-            _ = Native.FillRect(hdc, ref rc, bgBrush);
-            _ = Native.DeleteObject(bgBrush);
+            _ = Native.FillRect(hdc, ref rc, GetBrush(BAR_BG));
 
             Settings s = s_settings;
-            ActivityState st;
-            lock (s_gate) st = s_state.Clone();
+            ActivityState st = s_state;
 
             var theme = Themes.Get(s.ThemeName);
             int days = Math.Clamp(s.DaysToShow, 1, 7);
@@ -379,26 +402,21 @@ internal static class Program
                     alpha = Math.Min(50 + count * 20, 255) / 255.0;
                 }
 
-                uint border = Blend(0x00FFFFFF, BAR_BG, 0.08);
-                nint pen = Native.CreatePen(Native.PS_SOLID, 1, border);
-                nint brush = Native.CreateSolidBrush(Blend(fill, BAR_BG, alpha));
-                _ = Native.SelectObject(hdc, pen);
-                _ = Native.SelectObject(hdc, brush);
+                if (s_borderPen == default)
+                    s_borderPen = Native.CreatePen(Native.PS_SOLID, 1, Blend(0x00FFFFFF, BAR_BG, 0.08));
+                _ = Native.SelectObject(hdc, s_borderPen);
+                _ = Native.SelectObject(hdc, GetBrush(Blend(fill, BAR_BG, alpha)));
                 _ = Native.RoundRect(hdc, x, y, x + BOX_SIZE - 1, y + BOX_SIZE - 1, BOX_RADIUS * 2, BOX_RADIUS * 2);
-                _ = Native.DeleteObject(pen);
-                _ = Native.DeleteObject(brush);
 
                 if (s.HighlightCurrentDay
                     && st.HasData && !st.IsStreakOnly
                     && i < st.Dates.Length && st.Dates[i] == DateTime.Today)
                 {
-                    uint hl = Blend(0x00FFFFFF, BAR_BG, 0.6);
-                    nint hlBrush = Native.CreateSolidBrush(hl);
+                    nint hlBrush = GetBrush(Blend(0x00FFFFFF, BAR_BG, 0.6));
                     var outer = new Native.RECT { Left = x - 2, Top = y - 2, Right = x + BOX_SIZE + 1, Bottom = y + BOX_SIZE + 1 };
                     var inner = new Native.RECT { Left = x - 1, Top = y - 1, Right = x + BOX_SIZE, Bottom = y + BOX_SIZE };
                     _ = Native.FrameRect(hdc, ref outer, hlBrush);
                     _ = Native.FrameRect(hdc, ref inner, hlBrush);
-                    _ = Native.DeleteObject(hlBrush);
                 }
 
                 x += BOX_SIZE + BOX_GAP;
@@ -426,10 +444,12 @@ internal static class Program
             }
 
             Native.SetTextColor(hdc, 0x00DDDDDD);
+            var now = DateTime.Now;
+            s_lastMinute = now.Minute;
             var clockRc = new Native.RECT { Left = clientW / 2 - 150, Top = rc.Top, Right = clientW / 2 + 150, Bottom = rc.Bottom };
             _ = Native.DrawTextW(
                 hdc,
-                DateTime.Now.ToString("HH:mm"),
+                now.ToString("HH:mm"),
                 -1,
                 ref clockRc,
                 Native.DT_CENTER | Native.DT_VCENTER | Native.DT_SINGLELINE);

@@ -200,4 +200,6 @@ internal static class Native
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextW(nint hWnd, System.Text.StringBuilder lpString, int nMaxCount);
     [DllImport("user32.dll")] public static extern bool AdjustWindowRect(ref RECT lpRect, uint dwStyle, bool bMenu);
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern nint ShellExecuteW(nint hwnd, string lpOperation, string lpFile, string? lpParameters, string? lpDirectory, int nShowCmd);
+    [DllImport("kernel32.dll")] public static extern nint GetCurrentProcess();
+    [DllImport("kernel32.dll")] public static extern bool SetProcessWorkingSetSize(nint hProcess, int dwMinimumWorkingSetSize, int dwMaximumWorkingSetSize);
 }

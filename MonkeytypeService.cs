@@ -10,16 +10,6 @@ internal sealed class ActivityState
     public int MaxStreak { get; set; }
     public DateTime[] Dates { get; set; } = [];
     public int[] Counts { get; set; } = [];
-
-    public ActivityState Clone() => new()
-    {
-        HasData = HasData,
-        IsStreakOnly = IsStreakOnly,
-        Streak = Streak,
-        MaxStreak = MaxStreak,
-        Dates = (DateTime[])Dates.Clone(),
-        Counts = (int[])Counts.Clone(),
-    };
 }
 
 internal static class MonkeytypeService

@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish self-contained (trimmed, single file)
+        run: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o publish-sc
+
+      - name: Publish framework-dependent (single file)
+        run: dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish-fd
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            publish-sc/TopBar.exe
+            publish-fd/TopBar.exe
+          generate_release_notes: true

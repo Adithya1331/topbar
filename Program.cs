@@ -15,6 +15,7 @@ internal static class Program
 
     private const nint TIMER_REFRESH = 1;
     private const nint TIMER_CLOCK = 2;
+    private const nint TIMER_SYSINFO = 3;
 
     private const int CMD_REFRESH = 10;
     private const int CMD_SETTINGS = 11;
@@ -36,6 +37,7 @@ internal static class Program
     private static bool s_trimmed;
     private static int s_boxLeft;
     private static int s_boxRight;
+    private static string s_lastSysText = "";
 
     private static int Main()
     {
@@ -78,6 +80,11 @@ internal static class Program
         ApplyHotkeys();
         RestartTimer();
         Native.SetTimer(s_hwnd, TIMER_CLOCK, 5000, default);
+        if (s_settings.ShowCpuRam)
+        {
+            Native.SetTimer(s_hwnd, TIMER_SYSINFO, 5000, default);
+            SysInfo.Poll();
+        }
         _ = RefreshAsync();
 
         while (Native.GetMessageW(out Native.MSG msg, default, 0, 0) > 0)
@@ -213,6 +220,16 @@ internal static class Program
         ApplyAutostart();
         RestartTimer();
         MoveAppBar(s_hwnd);
+        if (s_settings.ShowCpuRam)
+        {
+            if (SysInfo.Text.Length == 0) SysInfo.Poll();
+            Native.SetTimer(s_hwnd, TIMER_SYSINFO, 5000, default);
+        }
+        else
+        {
+            Native.KillTimer(s_hwnd, TIMER_SYSINFO);
+            SysInfo.Reset();
+        }
         _ = RefreshAsync();
         _ = Native.InvalidateRect(s_hwnd, default, true);
     }
@@ -326,6 +343,15 @@ internal static class Program
                         _ = Native.InvalidateRect(hwnd, default, false);
                     }
                 }
+                else if (wParam == (nuint)TIMER_SYSINFO)
+                {
+                    SysInfo.Poll();
+                    if (SysInfo.Text != s_lastSysText)
+                    {
+                        s_lastSysText = SysInfo.Text;
+                        _ = Native.InvalidateRect(hwnd, default, false);
+                    }
+                }
                 return default;
 
             case WM_APP_REFRESH:
@@ -358,6 +384,7 @@ internal static class Program
                 Native.UnregisterHotKey(hwnd, HK_PROFILE);
                 Native.KillTimer(hwnd, TIMER_REFRESH);
                 Native.KillTimer(hwnd, TIMER_CLOCK);
+                Native.KillTimer(hwnd, TIMER_SYSINFO);
                 foreach (nint b in s_brushCache.Values) Native.DeleteObject(b);
                 s_brushCache.Clear();
                 if (s_borderPen != default)
@@ -456,17 +483,15 @@ internal static class Program
 
             int clientW = rc.Right - rc.Left;
 
-            string? status = null;
-            if (!st.HasData) status = "offline";
-            else if (st.IsStreakOnly) status = $"streak {st.Streak} · max {st.MaxStreak}";
-
-            if (status is not null)
+            string? sys = s.ShowCpuRam && SysInfo.Text.Length > 0 ? SysInfo.Text : null;
+            if (sys is not null)
             {
+                s_lastSysText = sys;
                 Native.SetTextColor(hdc, 0x00888888);
-                var textRc = new Native.RECT { Left = 12, Top = rc.Top, Right = x - 10, Bottom = rc.Bottom };
+                var textRc = new Native.RECT { Left = clientW / 2 + 160, Top = rc.Top, Right = s_boxLeft - 10, Bottom = rc.Bottom };
                 _ = Native.DrawTextW(
                     hdc,
-                    status,
+                    sys,
                     -1,
                     ref textRc,
                     Native.DT_RIGHT | Native.DT_VCENTER | Native.DT_SINGLELINE);

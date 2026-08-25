@@ -17,6 +17,7 @@ internal sealed class Settings
     public int DaysToShow { get; set; } = 7;
     public int BarHeight { get; set; } = 32;
     public bool StartWithWindows { get; set; }
+    public bool ShowCpuRam { get; set; } = true;
     public bool ShowCurrentWeekOnly { get; set; }
     public int WeekStartDay { get; set; } = 1;
     public bool HighlightCurrentDay { get; set; }

@@ -24,10 +24,15 @@ jobs:
       - name: Publish framework-dependent (single file)
         run: dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish-fd
 
+      - name: Rename artifacts
+        run: |
+          Move-Item publish-sc/TopBar.exe "TopBar-${{ github.ref_name }}-win-x64-selfcontained.exe"
+          Move-Item publish-fd/TopBar.exe "TopBar-${{ github.ref_name }}-win-x64-framework.exe"
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            publish-sc/TopBar.exe
-            publish-fd/TopBar.exe
+            TopBar-*-win-x64-selfcontained.exe
+            TopBar-*-win-x64-framework.exe
           generate_release_notes: true

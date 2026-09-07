@@ -18,6 +18,13 @@ internal sealed class Settings
     public int BarHeight { get; set; } = 32;
     public bool StartWithWindows { get; set; }
     public bool ShowCpuRam { get; set; } = true;
+    public bool ShowPomodoro { get; set; } = true;
+    public bool ShowFocusTimer { get; set; } = true;
+    public int FocusDurationMinutes { get; set; } = 25;
+    public bool ShowBattery { get; set; } = true;
+    public bool ShowVolume { get; set; } = true;
+    public string RoundPieToken { get; set; } = "";
+    public string RoundPieUrl { get; set; } = "https://api.rpie.me";
     public bool ShowCurrentWeekOnly { get; set; }
     public int WeekStartDay { get; set; } = 1;
     public bool HighlightCurrentDay { get; set; }
@@ -43,6 +50,7 @@ internal sealed class Settings
         ThemeName = Math.Clamp(ThemeName, 0, Themes.List.Length - 1);
         ColorMode = Math.Clamp(ColorMode, 0, 1);
         RefreshInterval = Math.Clamp(RefreshInterval, 60, 7 * 86400);
+        FocusDurationMinutes = Math.Clamp(FocusDurationMinutes, 5, 120);
         if (RightClickAction != "profile") RightClickAction = "homepage";
     }
 

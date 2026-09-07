@@ -17,3 +17,14 @@ jobs:
 
       - name: Build
         run: dotnet build -c Release
+
+      # Native AOT needs the MSVC linker, which windows-latest ships with.
+      # This verifies the AOT publish (ILC + link) succeeds on every push/PR.
+      - name: Publish (Native AOT)
+        run: dotnet publish -c Release -r win-x64 -o publish-aot
+
+      - name: Upload AOT artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TopBar-win-x64-aot
+          path: publish-aot/TopBar.exe

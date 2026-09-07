@@ -68,7 +68,7 @@ internal static class MonkeytypeService
         }
         catch
         {
-            return Zeros(dates);
+            return Unavailable(dates);
         }
     }
 
@@ -93,7 +93,7 @@ internal static class MonkeytypeService
         }
         catch
         {
-            return new ActivityState { IsStreakOnly = true, Dates = dates, Counts = new int[dates.Length] };
+            return Unavailable(dates);
         }
     }
 
@@ -171,6 +171,8 @@ internal static class MonkeytypeService
     }
 
     private static ActivityState Zeros(DateTime[] dates) => new() { Dates = dates, Counts = new int[dates.Length] };
+
+    private static ActivityState Unavailable(DateTime[] dates) => new() { HasData = false, Dates = dates, Counts = new int[dates.Length] };
 
     private static int GetInt(JsonElement e, string name)
     {

@@ -18,21 +18,26 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      - name: Publish self-contained (trimmed, single file)
-        run: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=true -o publish-sc
+      # Primary artifact: Native AOT. Single native exe, no .NET runtime needed,
+      # no JIT, smallest memory footprint. PublishAot is set in TopBar.csproj;
+      # the MSVC linker it requires is preinstalled on windows-latest.
+      - name: Publish Native AOT
+        run: dotnet publish -c Release -r win-x64 -o publish-aot
 
+      # Fallback: framework-dependent single file for users who already have
+      # the .NET 8 runtime and want the smallest download.
       - name: Publish framework-dependent (single file)
-        run: dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish-fd
+        run: dotnet publish -c Release -r win-x64 --self-contained false -p:PublishAot=false -p:PublishSingleFile=true -o publish-fd
 
       - name: Rename artifacts
         run: |
-          Move-Item publish-sc/TopBar.exe "TopBar-${{ github.ref_name }}-win-x64-selfcontained.exe"
+          Move-Item publish-aot/TopBar.exe "TopBar-${{ github.ref_name }}-win-x64.exe"
           Move-Item publish-fd/TopBar.exe "TopBar-${{ github.ref_name }}-win-x64-framework.exe"
 
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            TopBar-*-win-x64-selfcontained.exe
+            TopBar-*-win-x64.exe
             TopBar-*-win-x64-framework.exe
           generate_release_notes: true

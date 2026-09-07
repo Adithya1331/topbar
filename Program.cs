@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Microsoft.Win32;
 
@@ -5,6 +6,8 @@ namespace TopBar;
 
 internal static class Program
 {
+    private const int STATUS_GAP = 8;
+    private const int CPU_STATUS_WIDTH = 116;
     private const int BOX_SIZE = 14;
     private const int BOX_GAP = 6;
     private const int BOX_RADIUS = 3;
@@ -12,10 +15,14 @@ internal static class Program
 
     private const uint WM_APPBAR_CALLBACK = 0x8000 | 0x0001;
     private const uint WM_APP_REFRESH = 0x8000 | 0x0002;
+    internal const uint WM_APP_VOLUME = 0x8000 | 0x0003;
 
     private const nint TIMER_REFRESH = 1;
     private const nint TIMER_CLOCK = 2;
     private const nint TIMER_SYSINFO = 3;
+    private const nint TIMER_POMO = 4;
+    private const nint TIMER_RESUME_REFRESH = 5;
+    private const nint TIMER_FOCUS = 6;
 
     private const int CMD_REFRESH = 10;
     private const int CMD_SETTINGS = 11;
@@ -26,20 +33,33 @@ internal static class Program
     private const int HK_OPEN = 2;
     private const int HK_PROFILE = 3;
 
-    private static readonly Native.WndProc s_wndProc = WndProc;
     private static nint s_hwnd;
     private static uint s_taskbarCreated;
-    private static ActivityState s_state = new();
+    private static ActivityState s_state = new() { HasData = false };
     private static Settings s_settings = new();
     private static int s_lastMinute = -1;
     private static readonly Dictionary<uint, nint> s_brushCache = [];
     private static nint s_borderPen;
-    private static bool s_trimmed;
     private static int s_boxLeft;
     private static int s_boxRight;
     private static string s_lastSysText = "";
+    private static int s_pomoLeft;
+    private static int s_pomoRight;
+    private static string s_lastPomoText = "";
+    private static int s_focusLeft;
+    private static int s_focusRight;
+    private static int s_batteryLeft;
+    private static int s_batteryRight;
+    private static int s_volumeLeft;
+    private static int s_volumeRight;
+    private static int s_statusLeftLimit;
+    private static int s_clockLeft;
+    private static int s_clockRight;
+    private static int s_refreshing;
+    private static int s_resumeRefreshAttempts;
+    private static readonly List<nint> s_powerNotificationHandles = [];
 
-    private static int Main()
+    private static unsafe int Main()
     {
         using var mutex = new Mutex(true, @"Local\MonkeyBar-TopBar", out bool createdNew);
         if (!createdNew) return 0;
@@ -53,7 +73,7 @@ internal static class Program
         var wc = new Native.WNDCLASSEXW
         {
             cbSize = (uint)Marshal.SizeOf<Native.WNDCLASSEXW>(),
-            lpfnWndProc = s_wndProc,
+            lpfnWndProc = (nint)(delegate* unmanaged[Stdcall]<nint, uint, nuint, nint, nint>)&WndProc,
             hInstance = hInstance,
             hCursor = Native.LoadCursorW(default, Native.IDC_ARROW),
             lpszClassName = "TopBar",
@@ -79,12 +99,24 @@ internal static class Program
         MoveAppBar(s_hwnd);
         ApplyHotkeys();
         RestartTimer();
-        Native.SetTimer(s_hwnd, TIMER_CLOCK, 5000, default);
+        ArmClockTimer(s_hwnd);
         if (s_settings.ShowCpuRam)
         {
             Native.SetTimer(s_hwnd, TIMER_SYSINFO, 5000, default);
             SysInfo.Poll();
         }
+        if (s_settings.ShowPomodoro)
+        {
+            Native.SetTimer(s_hwnd, TIMER_POMO, 300000, default);
+            _ = RefreshPomodoroAsync();
+        }
+        if (s_settings.ShowBattery)
+        {
+            RegisterPowerNotifications(s_hwnd);
+            BatteryInfo.Poll();
+        }
+        if (s_settings.ShowVolume) VolumeInfo.Start(s_hwnd);
+        if (s_settings.ShowFocusTimer) FocusTimer.Reset(s_settings.FocusDurationMinutes);
         _ = RefreshAsync();
 
         while (Native.GetMessageW(out Native.MSG msg, default, 0, 0) > 0)
@@ -137,28 +169,46 @@ internal static class Program
 
     private static async Task RefreshAsync()
     {
+        if (Interlocked.Exchange(ref s_refreshing, 1) != 0) return;
         Settings snap = s_settings.Clone();
         try
         {
             var st = await MonkeytypeService.FetchTypingActivityAsync(snap);
-            s_state = st;
+            if (st.HasData || !s_state.HasData) s_state = st;
         }
         catch
         {
-            s_state = new ActivityState { HasData = false, Dates = s_state.Dates, Counts = s_state.Counts };
+            if (!s_state.HasData)
+                s_state = new ActivityState { HasData = false, Dates = s_state.Dates, Counts = s_state.Counts };
         }
-        TrimWorkingSet();
-        Native.PostMessageW(s_hwnd, WM_APP_REFRESH, 0, 0);
+        finally
+        {
+            Volatile.Write(ref s_refreshing, 0);
+            _ = Native.PostMessageW(s_hwnd, WM_APP_REFRESH, 0, 0);
+        }
     }
 
-    private static void TrimWorkingSet()
+    private static void RegisterPowerNotifications(nint hwnd)
     {
-        if (s_trimmed) return;
-        s_trimmed = true;
-        _ = Native.SetProcessWorkingSetSize(Native.GetCurrentProcess(), -1, -1);
+        if (s_powerNotificationHandles.Count != 0) return;
+        RegisterPowerNotification(hwnd, Native.GUID_ACDC_POWER_SOURCE);
+        RegisterPowerNotification(hwnd, Native.GUID_BATTERY_PERCENTAGE_REMAINING);
+        RegisterPowerNotification(hwnd, Native.GUID_POWER_SAVING_STATUS);
     }
 
-    private static nint GetBrush(uint color)
+    private static void RegisterPowerNotification(nint hwnd, Guid setting)
+    {
+        nint handle = Native.RegisterPowerSettingNotification(hwnd, ref setting, Native.DEVICE_NOTIFY_WINDOW_HANDLE);
+        if (handle != default) s_powerNotificationHandles.Add(handle);
+    }
+
+    private static void UnregisterPowerNotifications()
+    {
+        foreach (nint handle in s_powerNotificationHandles) _ = Native.UnregisterPowerSettingNotification(handle);
+        s_powerNotificationHandles.Clear();
+    }
+
+    internal static nint GetBrush(uint color)
     {
         if (!s_brushCache.TryGetValue(color, out nint b))
         {
@@ -166,6 +216,18 @@ internal static class Program
             s_brushCache[color] = b;
         }
         return b;
+    }
+
+    /// <summary>
+    /// Arms a one-shot timer that fires just after the next minute boundary,
+    /// so the clock wakes up once per minute instead of polling every 5 s.
+    /// </summary>
+    private static void ArmClockTimer(nint hwnd)
+    {
+        var now = DateTime.Now;
+        int msIntoMinute = now.Second * 1000 + now.Millisecond;
+        uint delay = (uint)(60_000 - msIntoMinute + 50);
+        Native.SetTimer(hwnd, TIMER_CLOCK, delay, default);
     }
 
     private static void RestartTimer()
@@ -214,6 +276,11 @@ internal static class Program
         _ = Native.ShellExecuteW(s_hwnd, "open", $"https://monkeytype.com/profile/{Uri.EscapeDataString(s_settings.Username)}", null, null, Native.SW_SHOWNORMAL);
     }
 
+    private static void OpenRoundPie()
+    {
+        _ = Native.ShellExecuteW(s_hwnd, "open", "https://my.rpie.me/", null, null, Native.SW_SHOWNORMAL);
+    }
+
     private static void OnSettingsSaved()
     {
         ApplyHotkeys();
@@ -230,8 +297,55 @@ internal static class Program
             Native.KillTimer(s_hwnd, TIMER_SYSINFO);
             SysInfo.Reset();
         }
+        if (s_settings.ShowPomodoro)
+        {
+            Native.SetTimer(s_hwnd, TIMER_POMO, 300000, default);
+            _ = RefreshPomodoroAsync();
+        }
+        else
+        {
+            Native.KillTimer(s_hwnd, TIMER_POMO);
+        }
+        if (s_settings.ShowBattery)
+        {
+            RegisterPowerNotifications(s_hwnd);
+            BatteryInfo.Poll();
+        }
+        else
+        {
+            UnregisterPowerNotifications();
+            BatteryInfo.Reset();
+        }
+        if (s_settings.ShowVolume)
+        {
+            VolumeInfo.Start(s_hwnd);
+            VolumeInfo.Refresh();
+        }
+        else
+        {
+            VolumeInfo.Stop();
+        }
+        if (!s_settings.ShowFocusTimer)
+        {
+            Native.KillTimer(s_hwnd, TIMER_FOCUS);
+        }
+        else if (!FocusTimer.IsRunning)
+        {
+            FocusTimer.Reset(s_settings.FocusDurationMinutes);
+        }
         _ = RefreshAsync();
         _ = Native.InvalidateRect(s_hwnd, default, true);
+    }
+
+    private static async Task RefreshPomodoroAsync()
+    {
+        await Pomodoro.RefreshAsync(s_settings);
+        if (Pomodoro.TodayText != s_lastPomoText)
+        {
+            s_lastPomoText = Pomodoro.TodayText;
+            var region = new Native.RECT { Left = 0, Top = 0, Right = Math.Max(s_pomoRight, 200) + 16, Bottom = s_settings.BarHeight };
+            _ = Native.InvalidateRect(s_hwnd, ref region, false);
+        }
     }
 
     private static void ApplyAutostart()
@@ -311,25 +425,118 @@ internal static class Program
         return s_boxRight > s_boxLeft && x >= s_boxLeft - 2 && x <= s_boxRight + 2;
     }
 
+    private static bool IsOverPomo(nint lParam)
+    {
+        int x = (short)(lParam & 0xFFFF);
+        return s_pomoRight > s_pomoLeft && x >= s_pomoLeft - 2 && x <= s_pomoRight + 4;
+    }
+
+    private static bool IsOverVolume(nint lParam)
+    {
+        int x = (short)(lParam & 0xFFFF);
+        return IsOverVolumeX(x);
+    }
+
+    private static bool IsOverVolumeX(int x)
+    {
+        return s_volumeRight > s_volumeLeft && x >= s_volumeLeft - 3 && x <= s_volumeRight + 3;
+    }
+
+    private static bool IsOverFocusTimer(nint lParam)
+    {
+        int x = (short)(lParam & 0xFFFF);
+        return s_focusRight > s_focusLeft && x >= s_focusLeft - 3 && x <= s_focusRight + 3;
+    }
+
+    private static void ToggleFocusTimer(nint hwnd)
+    {
+        if (FocusTimer.Toggle(s_settings.FocusDurationMinutes))
+            Native.SetTimer(hwnd, TIMER_FOCUS, 1000, default);
+        else
+            Native.KillTimer(hwnd, TIMER_FOCUS);
+        InvalidateFocusArea(hwnd);
+    }
+
+    private static void ResetFocusTimer(nint hwnd)
+    {
+        FocusTimer.Reset(s_settings.FocusDurationMinutes);
+        Native.KillTimer(hwnd, TIMER_FOCUS);
+        InvalidateFocusArea(hwnd);
+    }
+
+    private static void InvalidateFocusArea(nint hwnd)
+    {
+        if (s_focusRight <= s_focusLeft)
+        {
+            _ = Native.InvalidateRect(hwnd, default, false);
+            return;
+        }
+
+        var region = new Native.RECT { Left = s_focusLeft - 4, Top = 0, Right = s_focusRight + 4, Bottom = s_settings.BarHeight };
+        _ = Native.InvalidateRect(hwnd, ref region, false);
+    }
+
+    private static void InvalidateClockArea(nint hwnd)
+    {
+        if (s_clockRight <= s_clockLeft)
+        {
+            _ = Native.InvalidateRect(hwnd, default, false);
+            return;
+        }
+
+        var region = new Native.RECT { Left = s_clockLeft, Top = 0, Right = s_clockRight, Bottom = s_settings.BarHeight };
+        _ = Native.InvalidateRect(hwnd, ref region, false);
+    }
+
+    private static void InvalidateStatusArea(nint hwnd)
+    {
+        if (s_boxLeft <= s_statusLeftLimit)
+        {
+            _ = Native.InvalidateRect(hwnd, default, false);
+            return;
+        }
+
+        var region = new Native.RECT { Left = s_statusLeftLimit - 8, Top = 0, Right = s_boxLeft, Bottom = s_settings.BarHeight };
+        _ = Native.InvalidateRect(hwnd, ref region, false);
+    }
+
     private static void AppendDisabled(nint menu, string text)
     {
         _ = Native.AppendMenuW(menu, Native.MF_STRING | Native.MF_GRAYED, 0, text);
     }
 
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
     private static nint WndProc(nint hwnd, uint msg, nuint wParam, nint lParam)
     {
         switch (msg)
         {
+            case Native.WM_ERASEBKGND:
+                return new nint(1);
+
             case Native.WM_PAINT:
                 Paint(hwnd);
                 return default;
 
             case Native.WM_LBUTTONUP:
-                if (IsOverBoxes(lParam)) OpenMonkeytype();
+                if (IsOverPomo(lParam)) OpenRoundPie();
+                else if (IsOverFocusTimer(lParam)) ToggleFocusTimer(hwnd);
+                else if (IsOverVolume(lParam)) VolumeInfo.ToggleMute();
+                else if (IsOverBoxes(lParam)) OpenMonkeytype();
                 return default;
 
             case Native.WM_RBUTTONUP:
                 if (IsOverBoxes(lParam)) ShowMenu();
+                else if (IsOverFocusTimer(lParam)) ResetFocusTimer(hwnd);
+                return default;
+
+            case Native.WM_MOUSEWHEEL:
+                var wheelPoint = new Native.POINT { X = (short)(lParam & 0xFFFF), Y = (short)((lParam >> 16) & 0xFFFF) };
+                _ = Native.ScreenToClient(hwnd, ref wheelPoint);
+                if (IsOverVolumeX(wheelPoint.X))
+                {
+                    VolumeInfo.Adjust((short)((wParam >> 16) & 0xFFFF));
+                    InvalidateStatusArea(hwnd);
+                }
                 return default;
 
             case Native.WM_TIMER:
@@ -340,8 +547,9 @@ internal static class Program
                     if (m != s_lastMinute)
                     {
                         s_lastMinute = m;
-                        _ = Native.InvalidateRect(hwnd, default, false);
+                        InvalidateClockArea(hwnd);
                     }
+                    ArmClockTimer(hwnd);
                 }
                 else if (wParam == (nuint)TIMER_SYSINFO)
                 {
@@ -349,14 +557,69 @@ internal static class Program
                     if (SysInfo.Text != s_lastSysText)
                     {
                         s_lastSysText = SysInfo.Text;
-                        _ = Native.InvalidateRect(hwnd, default, false);
+                        InvalidateStatusArea(hwnd);
                     }
+                }
+                else if (wParam == (nuint)TIMER_POMO)
+                {
+                    _ = RefreshPomodoroAsync();
+                }
+                else if (wParam == (nuint)TIMER_RESUME_REFRESH)
+                {
+                    _ = RefreshAsync();
+                    _ = RefreshPomodoroAsync();
+                    if (--s_resumeRefreshAttempts > 0)
+                        Native.SetTimer(hwnd, TIMER_RESUME_REFRESH, 20000, default);
+                    else
+                        Native.KillTimer(hwnd, TIMER_RESUME_REFRESH);
+                }
+                else if (wParam == (nuint)TIMER_FOCUS)
+                {
+                    if (FocusTimer.Tick(s_settings.FocusDurationMinutes))
+                    {
+                        Native.KillTimer(hwnd, TIMER_FOCUS);
+                        _ = Native.MessageBeep(0x00000040);
+                    }
+                    InvalidateFocusArea(hwnd);
                 }
                 return default;
 
             case WM_APP_REFRESH:
                 _ = Native.InvalidateRect(hwnd, default, true);
                 return default;
+
+            case WM_APP_VOLUME:
+                VolumeInfo.Refresh();
+                InvalidateStatusArea(hwnd);
+                return default;
+
+            case Native.WM_POWERBROADCAST:
+                if (wParam == (nuint)Native.PBT_POWERSETTINGCHANGE || wParam == (nuint)Native.PBT_APMPOWERSTATUSCHANGE)
+                {
+                    if (s_settings.ShowBattery)
+                    {
+                        BatteryInfo.Poll();
+                        InvalidateStatusArea(hwnd);
+                    }
+                }
+                else if (wParam == (nuint)Native.PBT_APMRESUMESUSPEND
+                    || wParam == (nuint)Native.PBT_APMRESUMEAUTOMATIC
+                    || wParam == (nuint)Native.PBT_APMRESUMECRITICAL)
+                {
+                    s_resumeRefreshAttempts = 2;
+                    Native.KillTimer(hwnd, TIMER_RESUME_REFRESH);
+                    Native.SetTimer(hwnd, TIMER_RESUME_REFRESH, 8000, default);
+                    if (s_settings.ShowBattery) BatteryInfo.Poll();
+                    if (s_settings.ShowVolume) VolumeInfo.Refresh();
+                    if (s_settings.ShowFocusTimer && FocusTimer.Tick(s_settings.FocusDurationMinutes))
+                    {
+                        Native.KillTimer(hwnd, TIMER_FOCUS);
+                        _ = Native.MessageBeep(0x00000040);
+                    }
+                    InvalidateStatusArea(hwnd);
+                    InvalidateFocusArea(hwnd);
+                }
+                return new nint(1);
 
             case Native.WM_HOTKEY:
                 switch ((int)wParam)
@@ -385,6 +648,11 @@ internal static class Program
                 Native.KillTimer(hwnd, TIMER_REFRESH);
                 Native.KillTimer(hwnd, TIMER_CLOCK);
                 Native.KillTimer(hwnd, TIMER_SYSINFO);
+                Native.KillTimer(hwnd, TIMER_POMO);
+                Native.KillTimer(hwnd, TIMER_RESUME_REFRESH);
+                Native.KillTimer(hwnd, TIMER_FOCUS);
+                UnregisterPowerNotifications();
+                VolumeInfo.Stop();
                 foreach (nint b in s_brushCache.Values) Native.DeleteObject(b);
                 s_brushCache.Clear();
                 if (s_borderPen != default)
@@ -423,7 +691,10 @@ internal static class Program
         try
         {
             _ = Native.GetClientRect(hwnd, out Native.RECT rc);
-            _ = Native.FillRect(hdc, ref rc, GetBrush(BAR_BG));
+            // Only the invalidated strip needs clearing; GDI clips everything else anyway,
+            // but skipping the calls saves the work of issuing them.
+            Native.RECT dirty = ps.rcPaint;
+            _ = Native.FillRect(hdc, ref dirty, GetBrush(BAR_BG));
 
             Settings s = s_settings;
             ActivityState st = s_state;
@@ -431,87 +702,283 @@ internal static class Program
             var theme = Themes.Get(s.ThemeName);
             int days = Math.Clamp(s.DaysToShow, 1, 7);
             int y = ((rc.Bottom - rc.Top) - BOX_SIZE) / 2;
+            int cy = y + BOX_SIZE / 2;
             int totalW = days * BOX_SIZE + (days - 1) * BOX_GAP;
             int x = rc.Right - 12 - totalW;
             s_boxLeft = x;
             s_boxRight = x + totalW;
 
-            for (int i = 0; i < days; i++)
+            _ = Native.SelectObject(hdc, Native.GetStockObject(Native.DEFAULT_GUI_FONT));
+            Native.SetBkMode(hdc, Native.TRANSPARENT);
+
+            string pomoText = s.ShowPomodoro ? Pomodoro.TodayText : "";
+            if (pomoText.Length > 0)
             {
-                int count = st.HasData && !st.IsStreakOnly && i < st.Counts.Length ? st.Counts[i] : 0;
+                // Geometry is always computed (hit-testing depends on it); drawing is conditional.
+                Native.SIZE sz = default;
+                _ = Native.GetTextExtentPoint32W(hdc, pomoText, pomoText.Length, ref sz);
+                s_pomoLeft = 12;
+                s_pomoRight = 27 + sz.cx + 6;
 
-                uint fill;
-                double alpha;
-                if (count == 0)
+                if (Hits(dirty, s_pomoLeft, s_pomoRight))
                 {
-                    fill = 0x00FFFFFF;
-                    alpha = 0.12;
-                }
-                else if (s.ColorMode == 1)
-                {
-                    fill = Themes.GradeColor(theme, count);
-                    alpha = 1.0;
-                }
-                else
-                {
-                    fill = theme.Grade3;
-                    alpha = Math.Min(50 + count * 20, 255) / 255.0;
-                }
+                    _ = Native.SelectObject(hdc, Native.GetStockObject(Native.NULL_PEN));
+                    _ = Native.SelectObject(hdc, GetBrush(0x003C54E8));
+                    _ = Native.Ellipse(hdc, 12, cy - 4, 21, cy + 5);
 
+                    Native.SetTextColor(hdc, 0x00DDDDDD);
+                    var pomoRc = new Native.RECT { Left = 27, Top = rc.Top, Right = 27 + sz.cx + 2, Bottom = rc.Bottom };
+                    _ = Native.DrawTextW(hdc, pomoText, -1, ref pomoRc, Native.DT_LEFT | Native.DT_VCENTER | Native.DT_SINGLELINE);
+                }
+            }
+            else
+            {
+                s_pomoLeft = 0;
+                s_pomoRight = 0;
+            }
+
+            s_focusLeft = s_focusRight = 0;
+            if (s.ShowFocusTimer)
+            {
+                FocusTimerSnapshot focus = FocusTimer.GetSnapshot(s.FocusDurationMinutes);
+                int focusX = pomoText.Length > 0 ? s_pomoRight + 16 : 12;
+                const int ringSize = 18;
+                int ringTop = cy - ringSize / 2;
+                int ringRight = focusX + ringSize;
+
+                string focusText = focus.Text;
+                Native.SIZE focusSize = default;
+                _ = Native.GetTextExtentPoint32W(hdc, focusText, focusText.Length, ref focusSize);
+                var focusRc = new Native.RECT { Left = ringRight + 7, Top = rc.Top, Right = ringRight + 9 + focusSize.cx, Bottom = rc.Bottom };
+                s_focusLeft = focusX;
+                s_focusRight = focusRc.Right + 4;
+
+                if (Hits(dirty, s_focusLeft, s_focusRight))
+                {
+                    _ = Native.SelectObject(hdc, Native.GetStockObject(Native.NULL_PEN));
+                    _ = Native.SelectObject(hdc, GetBrush(0x00444A4A));
+                    _ = Native.Ellipse(hdc, focusX, ringTop, ringRight, ringTop + ringSize);
+
+                    if (focus.Progress >= 0.999)
+                    {
+                        _ = Native.SelectObject(hdc, GetBrush(0x003C54E8));
+                        _ = Native.Ellipse(hdc, focusX, ringTop, ringRight, ringTop + ringSize);
+                    }
+                    else if (focus.Progress > 0.001)
+                    {
+                        double end = -Math.PI / 2 + Math.PI * 2 * focus.Progress;
+                        int cxRing = focusX + ringSize / 2;
+                        int cyRing = ringTop + ringSize / 2;
+                        int radius = ringSize / 2;
+                        int sx = cxRing;
+                        int sy = ringTop;
+                        int ex = cxRing + (int)Math.Round(Math.Cos(end) * radius);
+                        int ey = cyRing + (int)Math.Round(Math.Sin(end) * radius);
+                        _ = Native.SelectObject(hdc, GetBrush(0x003C54E8));
+                        _ = Native.Pie(hdc, focusX, ringTop, ringRight, ringTop + ringSize, sx, sy, ex, ey);
+                    }
+
+                    _ = Native.SelectObject(hdc, GetBrush(BAR_BG));
+                    _ = Native.Ellipse(hdc, focusX + 4, ringTop + 4, ringRight - 4, ringTop + ringSize - 4);
+
+                    Native.SetTextColor(hdc, focus.IsRunning ? 0x00DDDDDDu : 0x00999999u);
+                    _ = Native.DrawTextW(hdc, focusText, -1, ref focusRc, Native.DT_LEFT | Native.DT_VCENTER | Native.DT_SINGLELINE);
+                }
+            }
+
+            if (Hits(dirty, s_boxLeft - 2, s_boxRight + 2))
+            {
                 if (s_borderPen == default)
                     s_borderPen = Native.CreatePen(Native.PS_SOLID, 1, Blend(0x00FFFFFF, BAR_BG, 0.08));
                 _ = Native.SelectObject(hdc, s_borderPen);
-                _ = Native.SelectObject(hdc, GetBrush(Blend(fill, BAR_BG, alpha)));
-                _ = Native.RoundRect(hdc, x, y, x + BOX_SIZE - 1, y + BOX_SIZE - 1, BOX_RADIUS * 2, BOX_RADIUS * 2);
-
-                if (s.HighlightCurrentDay
-                    && st.HasData && !st.IsStreakOnly
-                    && i < st.Dates.Length && st.Dates[i] == DateTime.Today)
-                {
-                    nint hlBrush = GetBrush(Blend(0x00FFFFFF, BAR_BG, 0.6));
-                    var outer = new Native.RECT { Left = x - 2, Top = y - 2, Right = x + BOX_SIZE + 1, Bottom = y + BOX_SIZE + 1 };
-                    var inner = new Native.RECT { Left = x - 1, Top = y - 1, Right = x + BOX_SIZE, Bottom = y + BOX_SIZE };
-                    _ = Native.FrameRect(hdc, ref outer, hlBrush);
-                    _ = Native.FrameRect(hdc, ref inner, hlBrush);
-                }
-
-                x += BOX_SIZE + BOX_GAP;
+                DrawActivityBoxes(hdc, s, st, theme, days, x, y);
             }
-
-            Native.SetBkMode(hdc, Native.TRANSPARENT);
-            _ = Native.SelectObject(hdc, Native.GetStockObject(Native.DEFAULT_GUI_FONT));
 
             int clientW = rc.Right - rc.Left;
+            s_statusLeftLimit = clientW / 2 + 160;
+            s_clockLeft = clientW / 2 - 150;
+            s_clockRight = clientW / 2 + 150;
 
+            int statusRight = s_boxLeft - 10;
             string? sys = s.ShowCpuRam && SysInfo.Text.Length > 0 ? SysInfo.Text : null;
-            if (sys is not null)
+            bool statusFits = true;
+            if (s.ShowCpuRam)
             {
-                s_lastSysText = sys;
-                Native.SetTextColor(hdc, 0x00888888);
-                var textRc = new Native.RECT { Left = clientW / 2 + 160, Top = rc.Top, Right = s_boxLeft - 10, Bottom = rc.Bottom };
-                _ = Native.DrawTextW(
-                    hdc,
-                    sys,
-                    -1,
-                    ref textRc,
-                    Native.DT_RIGHT | Native.DT_VCENTER | Native.DT_SINGLELINE);
+                s_lastSysText = sys ?? "";
+                statusFits = DrawCpuStatus(hdc, sys, ref statusRight, s_statusLeftLimit, rc, dirty);
             }
 
-            Native.SetTextColor(hdc, 0x00DDDDDD);
+            s_volumeLeft = s_volumeRight = 0;
+            if (statusFits && s.ShowVolume && VolumeInfo.Text.Length > 0)
+            {
+                statusFits = DrawVolumeStatus(hdc, VolumeInfo.Text, ref statusRight, s_statusLeftLimit, rc, dirty, out s_volumeLeft, out s_volumeRight);
+            }
+
+            s_batteryLeft = s_batteryRight = 0;
+            if (statusFits && s.ShowBattery && BatteryInfo.Text.Length > 0)
+            {
+                _ = DrawBatteryStatus(hdc, BatteryInfo.Text, ref statusRight, s_statusLeftLimit, rc, dirty, out s_batteryLeft, out s_batteryRight);
+            }
+
             var now = DateTime.Now;
             s_lastMinute = now.Minute;
-            var clockRc = new Native.RECT { Left = clientW / 2 - 150, Top = rc.Top, Right = clientW / 2 + 150, Bottom = rc.Bottom };
-            _ = Native.DrawTextW(
-                hdc,
-                now.ToString("HH:mm"),
-                -1,
-                ref clockRc,
-                Native.DT_CENTER | Native.DT_VCENTER | Native.DT_SINGLELINE);
+            if (Hits(dirty, s_clockLeft, s_clockRight))
+            {
+                Native.SetTextColor(hdc, 0x00DDDDDD);
+                var clockRc = new Native.RECT { Left = s_clockLeft, Top = rc.Top, Right = s_clockRight, Bottom = rc.Bottom };
+                _ = Native.DrawTextW(
+                    hdc,
+                    now.ToString("HH:mm"),
+                    -1,
+                    ref clockRc,
+                    Native.DT_CENTER | Native.DT_VCENTER | Native.DT_SINGLELINE);
+            }
         }
         finally
         {
             _ = Native.EndPaint(hwnd, ref ps);
         }
+    }
+
+    /// <summary>True when the horizontal span [left, right) overlaps the invalidated rect.</summary>
+    private static bool Hits(in Native.RECT dirty, int left, int right) => right > dirty.Left && left < dirty.Right;
+
+    private static void DrawActivityBoxes(nint hdc, Settings s, ActivityState st, Theme theme, int days, int x, int y)
+    {
+        for (int i = 0; i < days; i++)
+        {
+            int count = st.HasData && !st.IsStreakOnly && i < st.Counts.Length ? st.Counts[i] : 0;
+
+            uint fill;
+            double alpha;
+            if (count == 0)
+            {
+                fill = 0x00FFFFFF;
+                alpha = 0.12;
+            }
+            else if (s.ColorMode == 1)
+            {
+                fill = Themes.GradeColor(theme, count);
+                alpha = 1.0;
+            }
+            else
+            {
+                fill = theme.Grade3;
+                alpha = Math.Min(50 + count * 20, 255) / 255.0;
+            }
+
+            _ = Native.SelectObject(hdc, GetBrush(Blend(fill, BAR_BG, alpha)));
+            _ = Native.RoundRect(hdc, x, y, x + BOX_SIZE - 1, y + BOX_SIZE - 1, BOX_RADIUS * 2, BOX_RADIUS * 2);
+
+            if (s.HighlightCurrentDay
+                && st.HasData && !st.IsStreakOnly
+                && i < st.Dates.Length && st.Dates[i] == DateTime.Today)
+            {
+                nint hlBrush = GetBrush(Blend(0x00FFFFFF, BAR_BG, 0.6));
+                var outer = new Native.RECT { Left = x - 2, Top = y - 2, Right = x + BOX_SIZE + 1, Bottom = y + BOX_SIZE + 1 };
+                var inner = new Native.RECT { Left = x - 1, Top = y - 1, Right = x + BOX_SIZE, Bottom = y + BOX_SIZE };
+                _ = Native.FrameRect(hdc, ref outer, hlBrush);
+                _ = Native.FrameRect(hdc, ref inner, hlBrush);
+            }
+
+            x += BOX_SIZE + BOX_GAP;
+        }
+    }
+
+    private static bool DrawCpuStatus(nint hdc, string? text, ref int right, int leftLimit, Native.RECT bounds, in Native.RECT dirty)
+    {
+        int left = right - CPU_STATUS_WIDTH;
+        if (left < leftLimit)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(text) && Hits(dirty, left, right))
+        {
+            Native.SetTextColor(hdc, 0x00888888);
+            var textRc = new Native.RECT { Left = left, Top = bounds.Top, Right = right, Bottom = bounds.Bottom };
+            _ = Native.DrawTextW(hdc, text, -1, ref textRc, Native.DT_LEFT | Native.DT_VCENTER | Native.DT_SINGLELINE);
+        }
+        right = left - STATUS_GAP;
+        return true;
+    }
+
+    private static bool DrawVolumeStatus(nint hdc, string text, ref int right, int leftLimit, Native.RECT bounds, in Native.RECT dirty, out int left, out int itemRight)
+    {
+        Native.SIZE size = default;
+        _ = Native.GetTextExtentPoint32W(hdc, text, text.Length, ref size);
+        itemRight = right;
+        left = right - (19 + size.cx);
+        if (left < leftLimit)
+        {
+            left = itemRight = 0;
+            return false;
+        }
+
+        if (!Hits(dirty, left, right))
+        {
+            right = left - STATUS_GAP;
+            return true;
+        }
+
+        int cy = (bounds.Bottom - bounds.Top) / 2;
+        uint iconColor = VolumeInfo.IsMuted ? 0x00666666u : 0x00C8C8C8u;
+        _ = Native.SelectObject(hdc, Native.GetStockObject(Native.NULL_PEN));
+        _ = Native.SelectObject(hdc, GetBrush(iconColor));
+        Native.POINT[] speaker =
+        [
+            new() { X = left, Y = cy - 3 }, new() { X = left + 4, Y = cy - 3 },
+            new() { X = left + 9, Y = cy - 7 }, new() { X = left + 9, Y = cy + 7 },
+            new() { X = left + 4, Y = cy + 3 }, new() { X = left, Y = cy + 3 },
+        ];
+        _ = Native.Polygon(hdc, speaker, speaker.Length);
+        if (VolumeInfo.IsMuted)
+        {
+            _ = Native.SelectObject(hdc, GetBrush(0x004040D8));
+            _ = Native.Ellipse(hdc, left + 10, cy - 2, left + 14, cy + 2);
+        }
+
+        Native.SetTextColor(hdc, 0x00C8C8C8);
+        var textRc = new Native.RECT { Left = left + 14, Top = bounds.Top, Right = right, Bottom = bounds.Bottom };
+        _ = Native.DrawTextW(hdc, text, -1, ref textRc, Native.DT_LEFT | Native.DT_VCENTER | Native.DT_SINGLELINE);
+        right = left - STATUS_GAP;
+        return true;
+    }
+
+    private static bool DrawBatteryStatus(nint hdc, string text, ref int right, int leftLimit, Native.RECT bounds, in Native.RECT dirty, out int left, out int itemRight)
+    {
+        Native.SIZE size = default;
+        _ = Native.GetTextExtentPoint32W(hdc, text, text.Length, ref size);
+        itemRight = right;
+        left = right - (22 + size.cx);
+        if (left < leftLimit)
+        {
+            left = itemRight = 0;
+            return false;
+        }
+
+        if (!Hits(dirty, left, right))
+        {
+            right = left - STATUS_GAP;
+            return true;
+        }
+
+        int cy = (bounds.Bottom - bounds.Top) / 2;
+        uint outline = 0x00C8C8C8;
+        uint fill = BatteryInfo.Percent <= 20 ? 0x004040D8u : BatteryInfo.IsCharging ? 0x003C54E8u : 0x0088C070u;
+        var body = new Native.RECT { Left = left, Top = cy - 5, Right = left + 14, Bottom = cy + 5 };
+        _ = Native.FrameRect(hdc, ref body, GetBrush(outline));
+        var cap = new Native.RECT { Left = left + 14, Top = cy - 2, Right = left + 16, Bottom = cy + 2 };
+        _ = Native.FillRect(hdc, ref cap, GetBrush(outline));
+        int chargeWidth = Math.Clamp((BatteryInfo.Percent * 10) / 100, 1, 10);
+        var charge = new Native.RECT { Left = left + 2, Top = cy - 3, Right = left + 2 + chargeWidth, Bottom = cy + 3 };
+        _ = Native.FillRect(hdc, ref charge, GetBrush(fill));
+
+        Native.SetTextColor(hdc, 0x00C8C8C8);
+        var textRc = new Native.RECT { Left = left + 20, Top = bounds.Top, Right = right, Bottom = bounds.Bottom };
+        _ = Native.DrawTextW(hdc, text, -1, ref textRc, Native.DT_LEFT | Native.DT_VCENTER | Native.DT_SINGLELINE);
+        right = left - STATUS_GAP;
+        return true;
     }
 }
 

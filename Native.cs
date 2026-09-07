@@ -4,8 +4,6 @@ namespace TopBar;
 
 internal static class Native
 {
-    public delegate nint WndProc(nint hwnd, uint msg, nuint wParam, nint lParam);
-
     public const uint WS_POPUP = 0x80000000u;
     public const uint WS_VISIBLE = 0x10000000u;
     public const uint WS_CHILD = 0x40000000u;
@@ -26,6 +24,12 @@ internal static class Native
 
     public const uint WM_DESTROY = 0x0002;
     public const uint WM_CREATE = 0x0001;
+    public const uint WM_KILLFOCUS = 0x0008;
+    public const uint WM_ERASEBKGND = 0x0014;
+    public const uint WM_KEYDOWN = 0x0100;
+    public const uint WM_MOUSEMOVE = 0x0200;
+    public const uint WM_LBUTTONDOWN = 0x0201;
+    public const uint WM_MOUSEWHEEL = 0x020A;
     public const uint WM_PAINT = 0x000F;
     public const uint WM_CLOSE = 0x0010;
     public const uint WM_COMMAND = 0x0111;
@@ -35,6 +39,7 @@ internal static class Native
     public const uint WM_LBUTTONUP = 0x0202;
     public const uint WM_RBUTTONUP = 0x0205;
     public const uint WM_HOTKEY = 0x0312;
+    public const uint WM_POWERBROADCAST = 0x0218;
 
     public const uint CB_ADDSTRING = 0x0143;
     public const uint CB_GETCURSEL = 0x0147;
@@ -43,6 +48,17 @@ internal static class Native
     public const uint BM_SETCHECK = 0x00F1;
     public const int BST_CHECKED = 0x0001;
 
+    public const uint DT_END_ELLIPSIS = 0x00008000;
+    public const uint WS_BORDER = 0x00800000u;
+    public const int NULL_PEN = 8;
+    public const uint VK_ESCAPE = 0x1B;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SIZE
+    {
+        public int cx;
+        public int cy;
+    }
     public const int TRANSPARENT = 1;
     public const int PS_SOLID = 0;
     public const int DEFAULT_GUI_FONT = 17;
@@ -81,6 +97,17 @@ internal static class Native
     public const uint MOD_WIN = 0x0008;
     public const int SW_SHOWNORMAL = 1;
 
+    public const int PBT_APMPOWERSTATUSCHANGE = 0x000A;
+    public const int PBT_APMRESUMESUSPEND = 0x0007;
+    public const int PBT_APMRESUMECRITICAL = 0x0006;
+    public const int PBT_APMRESUMEAUTOMATIC = 0x0012;
+    public const int PBT_POWERSETTINGCHANGE = 0x8013;
+    public const uint DEVICE_NOTIFY_WINDOW_HANDLE = 0x00000000;
+
+    public static readonly Guid GUID_ACDC_POWER_SOURCE = new("5D3E9A59-E9D5-4B00-A6BD-FF34FF516548");
+    public static readonly Guid GUID_BATTERY_PERCENTAGE_REMAINING = new("A7AD8041-B45A-4CAE-87A3-EECBB468A9E1");
+    public static readonly Guid GUID_POWER_SAVING_STATUS = new("E00958C0-C213-4ACE-AC77-FECCED2EEEA5");
+
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
     {
@@ -114,7 +141,7 @@ internal static class Native
     {
         public uint cbSize;
         public uint style;
-        public WndProc lpfnWndProc;
+        public nint lpfnWndProc;
         public int cbClsExtra;
         public int cbWndExtra;
         public nint hInstance;
@@ -178,6 +205,11 @@ internal static class Native
     [DllImport("gdi32.dll")] public static extern uint SetTextColor(nint hdc, uint color);
     [DllImport("gdi32.dll")] public static extern nint SelectObject(nint hdc, nint hObject);
     [DllImport("gdi32.dll")] public static extern bool RoundRect(nint hdc, int left, int top, int right, int bottom, int width, int height);
+    [DllImport("gdi32.dll")] public static extern bool Ellipse(nint hdc, int left, int top, int right, int bottom);
+    [DllImport("gdi32.dll")] public static extern bool Pie(nint hdc, int left, int top, int right, int bottom, int xStart, int yStart, int xEnd, int yEnd);
+    [DllImport("gdi32.dll")] public static extern bool Polygon(nint hdc, POINT[] lpPoints, int nCount);
+    [DllImport("gdi32.dll")] public static extern bool GetTextExtentPoint32W(nint hdc, string lpString, int c, ref SIZE lpSize);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(nint hwnd, out RECT lpRect);
     [DllImport("user32.dll")] public static extern int FrameRect(nint hdc, ref RECT lprc, nint hbr);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int DrawTextW(nint hdc, string lpchText, int cchText, ref RECT lprc, uint format);
     [DllImport("user32.dll")] public static extern nint LoadCursorW(nint hInstance, nint lpCursorName);
@@ -189,15 +221,18 @@ internal static class Native
     [DllImport("user32.dll")] public static extern int TrackPopupMenuEx(nint hMenu, uint uFlags, int x, int y, nint hwnd, nint lptpm);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT lpPoint);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(nint hwnd, ref POINT lpPoint);
+    [DllImport("user32.dll")] public static extern bool ScreenToClient(nint hwnd, ref POINT lpPoint);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(nint hWnd);
+    [DllImport("user32.dll")] public static extern bool MessageBeep(uint uType);
     [DllImport("user32.dll")] public static extern bool EnableWindow(nint hWnd, bool bEnable);
     [DllImport("user32.dll")] public static extern bool PostMessageW(nint hWnd, uint msg, nuint wParam, nint lParam);
     [DllImport("user32.dll")] public static extern bool InvalidateRect(nint hWnd, nint lpRect, bool bErase);
+    [DllImport("user32.dll")] public static extern bool InvalidateRect(nint hWnd, ref RECT lpRect, bool bErase);
     [DllImport("user32.dll")] public static extern nint SetTimer(nint hWnd, nint nIDEvent, uint uElapse, nint lpTimerFunc);
     [DllImport("user32.dll")] public static extern bool KillTimer(nint hWnd, nint uIDEvent);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern nint SendMessageW(nint hWnd, uint msg, nint wParam, string lParam);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern nint SendMessageW(nint hWnd, uint msg, nint wParam, nint lParam);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextW(nint hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextW(nint hWnd, [Out] char[] lpString, int nMaxCount);
     [DllImport("user32.dll")] public static extern bool AdjustWindowRect(ref RECT lpRect, uint dwStyle, bool bMenu);
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern nint ShellExecuteW(nint hwnd, string lpOperation, string lpFile, string? lpParameters, string? lpDirectory, int nShowCmd);
     [DllImport("kernel32.dll")] public static extern nint GetCurrentProcess();
@@ -218,5 +253,20 @@ internal static class Native
         public ulong ullAvailExtendedVirtual;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SYSTEM_POWER_STATUS
+    {
+        public byte ACLineStatus;
+        public byte BatteryFlag;
+        public byte BatteryLifePercent;
+        public byte SystemStatusFlag;
+        public uint BatteryLifeTime;
+        public uint BatteryFullLifeTime;
+    }
+
     [DllImport("kernel32.dll")] public static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+    [DllImport("kernel32.dll")] public static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS lpSystemPowerStatus);
+    [DllImport("ole32.dll")] public static extern int CoCreateInstance(ref Guid rclsid, nint pUnkOuter, int dwClsContext, ref Guid riid, out nint ppv);
+    [DllImport("user32.dll")] public static extern nint RegisterPowerSettingNotification(nint hRecipient, ref Guid powerSettingGuid, uint flags);
+    [DllImport("user32.dll")] public static extern bool UnregisterPowerSettingNotification(nint handle);
 }

@@ -6,8 +6,7 @@ namespace TopBar;
 
 internal static class Program
 {
-    private const int STATUS_GAP = 8;
-    private const int CPU_STATUS_WIDTH = 116;
+    private const int STATUS_GAP = 6;
     private const int BOX_SIZE = 14;
     private const int BOX_GAP = 6;
     private const int BOX_RADIUS = 3;
@@ -58,6 +57,11 @@ internal static class Program
     private static int s_refreshing;
     private static int s_resumeRefreshAttempts;
     private static readonly List<nint> s_powerNotificationHandles = [];
+    private static double s_scale = 1.0;
+    private static nint s_font;
+
+    /// <summary>Scales a 96-DPI design pixel value to the current system DPI.</summary>
+    private static int S(int px) => (int)Math.Round(px * s_scale);
 
     private static unsafe int Main()
     {
@@ -66,6 +70,7 @@ internal static class Program
 
         s_settings = Settings.Load();
         Native.SetProcessDPIAware();
+        InitScaling();
         s_taskbarCreated = Native.RegisterWindowMessageW("TaskbarCreated");
 
         nint hInstance = Native.GetModuleHandleW(null);
@@ -126,6 +131,36 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// Reads the system DPI and creates a DPI-scaled UI font. DEFAULT_GUI_FONT does not
+    /// scale, which is why fixed-pixel layouts overlapped on 125%/150% displays.
+    /// </summary>
+    private static void InitScaling()
+    {
+        nint screenDc = Native.GetDC(default);
+        if (screenDc != default)
+        {
+            int dpi = Native.GetDeviceCaps(screenDc, Native.LOGPIXELSX);
+            if (dpi > 0) s_scale = dpi / 96.0;
+            _ = Native.ReleaseDC(default, screenDc);
+        }
+
+        s_font = Native.CreateFontW(
+            -S(12), 0, 0, 0, Native.FW_NORMAL, 0, 0, 0,
+            Native.DEFAULT_CHARSET, Native.OUT_DEFAULT_PRECIS, Native.CLIP_DEFAULT_PRECIS,
+            Native.CLEARTYPE_QUALITY, Native.DEFAULT_PITCH, "Segoe UI");
+    }
+
+    private static nint UiFont() => s_font != default ? s_font : Native.GetStockObject(Native.DEFAULT_GUI_FONT);
+
+    /// <summary>Plays the Windows alarm sound; falls back to the system beep if the file is missing.</summary>
+    private static void PlayFocusDoneSound()
+    {
+        string alarm = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Media", "Alarm01.wav");
+        if (!File.Exists(alarm) || !Native.PlaySoundW(alarm, default, Native.SND_FILENAME | Native.SND_ASYNC | Native.SND_NODEFAULT))
+            _ = Native.MessageBeep(0x00000040);
     }
 
     private static void RegisterAppBar(nint hwnd)
@@ -578,7 +613,7 @@ internal static class Program
                     if (FocusTimer.Tick(s_settings.FocusDurationMinutes))
                     {
                         Native.KillTimer(hwnd, TIMER_FOCUS);
-                        _ = Native.MessageBeep(0x00000040);
+                        PlayFocusDoneSound();
                     }
                     InvalidateFocusArea(hwnd);
                 }
@@ -614,7 +649,7 @@ internal static class Program
                     if (s_settings.ShowFocusTimer && FocusTimer.Tick(s_settings.FocusDurationMinutes))
                     {
                         Native.KillTimer(hwnd, TIMER_FOCUS);
-                        _ = Native.MessageBeep(0x00000040);
+                        PlayFocusDoneSound();
                     }
                     InvalidateStatusArea(hwnd);
                     InvalidateFocusArea(hwnd);
@@ -660,6 +695,11 @@ internal static class Program
                     Native.DeleteObject(s_borderPen);
                     s_borderPen = default;
                 }
+                if (s_font != default)
+                {
+                    Native.DeleteObject(s_font);
+                    s_font = default;
+                }
                 Native.PostQuitMessage(0);
                 return default;
 
@@ -701,14 +741,17 @@ internal static class Program
 
             var theme = Themes.Get(s.ThemeName);
             int days = Math.Clamp(s.DaysToShow, 1, 7);
-            int y = ((rc.Bottom - rc.Top) - BOX_SIZE) / 2;
-            int cy = y + BOX_SIZE / 2;
-            int totalW = days * BOX_SIZE + (days - 1) * BOX_GAP;
-            int x = rc.Right - 12 - totalW;
+            int box = S(BOX_SIZE);
+            int boxGap = S(BOX_GAP);
+            int margin = S(12);
+            int y = ((rc.Bottom - rc.Top) - box) / 2;
+            int cy = y + box / 2;
+            int totalW = days * box + (days - 1) * boxGap;
+            int x = rc.Right - margin - totalW;
             s_boxLeft = x;
             s_boxRight = x + totalW;
 
-            _ = Native.SelectObject(hdc, Native.GetStockObject(Native.DEFAULT_GUI_FONT));
+            _ = Native.SelectObject(hdc, UiFont());
             Native.SetBkMode(hdc, Native.TRANSPARENT);
 
             string pomoText = s.ShowPomodoro ? Pomodoro.TodayText : "";
@@ -717,17 +760,19 @@ internal static class Program
                 // Geometry is always computed (hit-testing depends on it); drawing is conditional.
                 Native.SIZE sz = default;
                 _ = Native.GetTextExtentPoint32W(hdc, pomoText, pomoText.Length, ref sz);
-                s_pomoLeft = 12;
-                s_pomoRight = 27 + sz.cx + 6;
+                int dot = S(9);
+                int textLeft = margin + dot + S(6);
+                s_pomoLeft = margin;
+                s_pomoRight = textLeft + sz.cx + S(6);
 
                 if (Hits(dirty, s_pomoLeft, s_pomoRight))
                 {
                     _ = Native.SelectObject(hdc, Native.GetStockObject(Native.NULL_PEN));
                     _ = Native.SelectObject(hdc, GetBrush(0x003C54E8));
-                    _ = Native.Ellipse(hdc, 12, cy - 4, 21, cy + 5);
+                    _ = Native.Ellipse(hdc, margin, cy - dot / 2, margin + dot, cy - dot / 2 + dot);
 
                     Native.SetTextColor(hdc, 0x00DDDDDD);
-                    var pomoRc = new Native.RECT { Left = 27, Top = rc.Top, Right = 27 + sz.cx + 2, Bottom = rc.Bottom };
+                    var pomoRc = new Native.RECT { Left = textLeft, Top = rc.Top, Right = textLeft + sz.cx + 2, Bottom = rc.Bottom };
                     _ = Native.DrawTextW(hdc, pomoText, -1, ref pomoRc, Native.DT_LEFT | Native.DT_VCENTER | Native.DT_SINGLELINE);
                 }
             }
@@ -741,17 +786,18 @@ internal static class Program
             if (s.ShowFocusTimer)
             {
                 FocusTimerSnapshot focus = FocusTimer.GetSnapshot(s.FocusDurationMinutes);
-                int focusX = pomoText.Length > 0 ? s_pomoRight + 16 : 12;
-                const int ringSize = 18;
+                int focusX = pomoText.Length > 0 ? s_pomoRight + S(16) : margin;
+                int ringSize = S(18);
+                int ringInset = S(4);
                 int ringTop = cy - ringSize / 2;
                 int ringRight = focusX + ringSize;
 
                 string focusText = focus.Text;
                 Native.SIZE focusSize = default;
                 _ = Native.GetTextExtentPoint32W(hdc, focusText, focusText.Length, ref focusSize);
-                var focusRc = new Native.RECT { Left = ringRight + 7, Top = rc.Top, Right = ringRight + 9 + focusSize.cx, Bottom = rc.Bottom };
+                var focusRc = new Native.RECT { Left = ringRight + S(7), Top = rc.Top, Right = ringRight + S(9) + focusSize.cx, Bottom = rc.Bottom };
                 s_focusLeft = focusX;
-                s_focusRight = focusRc.Right + 4;
+                s_focusRight = focusRc.Right + S(4);
 
                 if (Hits(dirty, s_focusLeft, s_focusRight))
                 {
@@ -779,7 +825,7 @@ internal static class Program
                     }
 
                     _ = Native.SelectObject(hdc, GetBrush(BAR_BG));
-                    _ = Native.Ellipse(hdc, focusX + 4, ringTop + 4, ringRight - 4, ringTop + ringSize - 4);
+                    _ = Native.Ellipse(hdc, focusX + ringInset, ringTop + ringInset, ringRight - ringInset, ringTop + ringSize - ringInset);
 
                     Native.SetTextColor(hdc, focus.IsRunning ? 0x00DDDDDDu : 0x00999999u);
                     _ = Native.DrawTextW(hdc, focusText, -1, ref focusRc, Native.DT_LEFT | Native.DT_VCENTER | Native.DT_SINGLELINE);
@@ -791,15 +837,19 @@ internal static class Program
                 if (s_borderPen == default)
                     s_borderPen = Native.CreatePen(Native.PS_SOLID, 1, Blend(0x00FFFFFF, BAR_BG, 0.08));
                 _ = Native.SelectObject(hdc, s_borderPen);
-                DrawActivityBoxes(hdc, s, st, theme, days, x, y);
+                DrawActivityBoxes(hdc, s, st, theme, days, x, y, box, boxGap);
             }
 
+            // Clock is centered; status widgets may extend leftwards no further than the clock's right edge.
             int clientW = rc.Right - rc.Left;
-            s_statusLeftLimit = clientW / 2 + 160;
-            s_clockLeft = clientW / 2 - 150;
-            s_clockRight = clientW / 2 + 150;
+            Native.SIZE clockSize = default;
+            _ = Native.GetTextExtentPoint32W(hdc, "00:00", 5, ref clockSize);
+            int clockHalf = clockSize.cx / 2 + S(8);
+            s_clockLeft = clientW / 2 - clockHalf;
+            s_clockRight = clientW / 2 + clockHalf;
+            s_statusLeftLimit = s_clockRight + S(16);
 
-            int statusRight = s_boxLeft - 10;
+            int statusRight = s_boxLeft - S(10);
             string? sys = s.ShowCpuRam && SysInfo.Text.Length > 0 ? SysInfo.Text : null;
             bool statusFits = true;
             if (s.ShowCpuRam)
@@ -843,8 +893,9 @@ internal static class Program
     /// <summary>True when the horizontal span [left, right) overlaps the invalidated rect.</summary>
     private static bool Hits(in Native.RECT dirty, int left, int right) => right > dirty.Left && left < dirty.Right;
 
-    private static void DrawActivityBoxes(nint hdc, Settings s, ActivityState st, Theme theme, int days, int x, int y)
+    private static void DrawActivityBoxes(nint hdc, Settings s, ActivityState st, Theme theme, int days, int x, int y, int box, int boxGap)
     {
+        int radius = S(BOX_RADIUS) * 2;
         for (int i = 0; i < days; i++)
         {
             int count = st.HasData && !st.IsStreakOnly && i < st.Counts.Length ? st.Counts[i] : 0;
@@ -868,26 +919,40 @@ internal static class Program
             }
 
             _ = Native.SelectObject(hdc, GetBrush(Blend(fill, BAR_BG, alpha)));
-            _ = Native.RoundRect(hdc, x, y, x + BOX_SIZE - 1, y + BOX_SIZE - 1, BOX_RADIUS * 2, BOX_RADIUS * 2);
+            _ = Native.RoundRect(hdc, x, y, x + box - 1, y + box - 1, radius, radius);
 
             if (s.HighlightCurrentDay
                 && st.HasData && !st.IsStreakOnly
                 && i < st.Dates.Length && st.Dates[i] == DateTime.Today)
             {
                 nint hlBrush = GetBrush(Blend(0x00FFFFFF, BAR_BG, 0.6));
-                var outer = new Native.RECT { Left = x - 2, Top = y - 2, Right = x + BOX_SIZE + 1, Bottom = y + BOX_SIZE + 1 };
-                var inner = new Native.RECT { Left = x - 1, Top = y - 1, Right = x + BOX_SIZE, Bottom = y + BOX_SIZE };
+                var outer = new Native.RECT { Left = x - 2, Top = y - 2, Right = x + box + 1, Bottom = y + box + 1 };
+                var inner = new Native.RECT { Left = x - 1, Top = y - 1, Right = x + box, Bottom = y + box };
                 _ = Native.FrameRect(hdc, ref outer, hlBrush);
                 _ = Native.FrameRect(hdc, ref inner, hlBrush);
             }
 
-            x += BOX_SIZE + BOX_GAP;
+            x += box + boxGap;
         }
     }
 
+    // Typical widest string for the CPU/RAM widget (two-digit values). Reserving at least
+    // this width keeps neighbours from shifting as digits change; the rare 100% case simply
+    // grows the slot for a moment. Measuring with the real font avoids the DPI overlap bug.
+    private const string CPU_STATUS_TYPICAL = "CPU 00% \u00b7 RAM 00%";
+
     private static bool DrawCpuStatus(nint hdc, string? text, ref int right, int leftLimit, Native.RECT bounds, in Native.RECT dirty)
     {
-        int left = right - CPU_STATUS_WIDTH;
+        Native.SIZE size = default;
+        _ = Native.GetTextExtentPoint32W(hdc, CPU_STATUS_TYPICAL, CPU_STATUS_TYPICAL.Length, ref size);
+        int width = size.cx;
+        if (!string.IsNullOrEmpty(text))
+        {
+            Native.SIZE actual = default;
+            _ = Native.GetTextExtentPoint32W(hdc, text, text.Length, ref actual);
+            width = Math.Max(width, actual.cx);
+        }
+        int left = right - (width + S(2));
         if (left < leftLimit)
         {
             return false;
@@ -897,9 +962,9 @@ internal static class Program
         {
             Native.SetTextColor(hdc, 0x00888888);
             var textRc = new Native.RECT { Left = left, Top = bounds.Top, Right = right, Bottom = bounds.Bottom };
-            _ = Native.DrawTextW(hdc, text, -1, ref textRc, Native.DT_LEFT | Native.DT_VCENTER | Native.DT_SINGLELINE);
+            _ = Native.DrawTextW(hdc, text, -1, ref textRc, Native.DT_RIGHT | Native.DT_VCENTER | Native.DT_SINGLELINE);
         }
-        right = left - STATUS_GAP;
+        right = left - S(STATUS_GAP);
         return true;
     }
 
@@ -907,8 +972,10 @@ internal static class Program
     {
         Native.SIZE size = default;
         _ = Native.GetTextExtentPoint32W(hdc, text, text.Length, ref size);
+        int iconW = S(14);
+        int textGap = S(5);
         itemRight = right;
-        left = right - (19 + size.cx);
+        left = right - (iconW + textGap + size.cx);
         if (left < leftLimit)
         {
             left = itemRight = 0;
@@ -917,7 +984,7 @@ internal static class Program
 
         if (!Hits(dirty, left, right))
         {
-            right = left - STATUS_GAP;
+            right = left - S(STATUS_GAP);
             return true;
         }
 
@@ -927,21 +994,21 @@ internal static class Program
         _ = Native.SelectObject(hdc, GetBrush(iconColor));
         Native.POINT[] speaker =
         [
-            new() { X = left, Y = cy - 3 }, new() { X = left + 4, Y = cy - 3 },
-            new() { X = left + 9, Y = cy - 7 }, new() { X = left + 9, Y = cy + 7 },
-            new() { X = left + 4, Y = cy + 3 }, new() { X = left, Y = cy + 3 },
+            new() { X = left, Y = cy - S(3) }, new() { X = left + S(4), Y = cy - S(3) },
+            new() { X = left + S(9), Y = cy - S(7) }, new() { X = left + S(9), Y = cy + S(7) },
+            new() { X = left + S(4), Y = cy + S(3) }, new() { X = left, Y = cy + S(3) },
         ];
         _ = Native.Polygon(hdc, speaker, speaker.Length);
         if (VolumeInfo.IsMuted)
         {
             _ = Native.SelectObject(hdc, GetBrush(0x004040D8));
-            _ = Native.Ellipse(hdc, left + 10, cy - 2, left + 14, cy + 2);
+            _ = Native.Ellipse(hdc, left + S(10), cy - S(2), left + S(14), cy + S(2));
         }
 
         Native.SetTextColor(hdc, 0x00C8C8C8);
-        var textRc = new Native.RECT { Left = left + 14, Top = bounds.Top, Right = right, Bottom = bounds.Bottom };
+        var textRc = new Native.RECT { Left = left + iconW + textGap, Top = bounds.Top, Right = right, Bottom = bounds.Bottom };
         _ = Native.DrawTextW(hdc, text, -1, ref textRc, Native.DT_LEFT | Native.DT_VCENTER | Native.DT_SINGLELINE);
-        right = left - STATUS_GAP;
+        right = left - S(STATUS_GAP);
         return true;
     }
 
@@ -949,8 +1016,15 @@ internal static class Program
     {
         Native.SIZE size = default;
         _ = Native.GetTextExtentPoint32W(hdc, text, text.Length, ref size);
+        int bodyW = S(14);
+        int capW = S(2);
+        int textGap = S(4);
+        bool charging = BatteryInfo.IsCharging;
+        // Bolt sits to the left of the body (percentage is on the right), so it only takes space when plugged in.
+        int boltW = charging ? S(6) : 0;
+        int boltGap = charging ? S(3) : 0;
         itemRight = right;
-        left = right - (22 + size.cx);
+        left = right - (boltW + boltGap + bodyW + capW + textGap + size.cx);
         if (left < leftLimit)
         {
             left = itemRight = 0;
@@ -959,25 +1033,47 @@ internal static class Program
 
         if (!Hits(dirty, left, right))
         {
-            right = left - STATUS_GAP;
+            right = left - S(STATUS_GAP);
             return true;
         }
 
         int cy = (bounds.Bottom - bounds.Top) / 2;
+        int halfH = S(5);
         uint outline = 0x00C8C8C8;
-        uint fill = BatteryInfo.Percent <= 20 ? 0x004040D8u : BatteryInfo.IsCharging ? 0x003C54E8u : 0x0088C070u;
-        var body = new Native.RECT { Left = left, Top = cy - 5, Right = left + 14, Bottom = cy + 5 };
+        uint fill = BatteryInfo.Percent <= 20 && !charging ? 0x004040D8u : 0x0088C070u;
+
+        if (charging)
+        {
+            int bx = left + boltW / 2;
+            _ = Native.SelectObject(hdc, Native.GetStockObject(Native.NULL_PEN));
+            _ = Native.SelectObject(hdc, GetBrush(0x0088C070));
+            Native.POINT[] bolt =
+            [
+                new() { X = bx + S(1), Y = cy - halfH },
+                new() { X = bx - S(3), Y = cy + S(1) },
+                new() { X = bx,        Y = cy + S(1) },
+                new() { X = bx - S(1), Y = cy + halfH },
+                new() { X = bx + S(3), Y = cy - S(1) },
+                new() { X = bx,        Y = cy - S(1) },
+            ];
+            _ = Native.Polygon(hdc, bolt, bolt.Length);
+        }
+
+        int bodyLeft = left + boltW + boltGap;
+        var body = new Native.RECT { Left = bodyLeft, Top = cy - halfH, Right = bodyLeft + bodyW, Bottom = cy + halfH };
         _ = Native.FrameRect(hdc, ref body, GetBrush(outline));
-        var cap = new Native.RECT { Left = left + 14, Top = cy - 2, Right = left + 16, Bottom = cy + 2 };
+        var cap = new Native.RECT { Left = bodyLeft + bodyW, Top = cy - S(2), Right = bodyLeft + bodyW + capW, Bottom = cy + S(2) };
         _ = Native.FillRect(hdc, ref cap, GetBrush(outline));
-        int chargeWidth = Math.Clamp((BatteryInfo.Percent * 10) / 100, 1, 10);
-        var charge = new Native.RECT { Left = left + 2, Top = cy - 3, Right = left + 2 + chargeWidth, Bottom = cy + 3 };
+
+        int innerW = bodyW - S(4);
+        int chargeWidth = Math.Clamp((BatteryInfo.Percent * innerW) / 100, 1, innerW);
+        var charge = new Native.RECT { Left = bodyLeft + S(2), Top = cy - (halfH - S(2)), Right = bodyLeft + S(2) + chargeWidth, Bottom = cy + (halfH - S(2)) };
         _ = Native.FillRect(hdc, ref charge, GetBrush(fill));
 
         Native.SetTextColor(hdc, 0x00C8C8C8);
-        var textRc = new Native.RECT { Left = left + 20, Top = bounds.Top, Right = right, Bottom = bounds.Bottom };
+        var textRc = new Native.RECT { Left = bodyLeft + bodyW + capW + textGap, Top = bounds.Top, Right = right, Bottom = bounds.Bottom };
         _ = Native.DrawTextW(hdc, text, -1, ref textRc, Native.DT_LEFT | Native.DT_VCENTER | Native.DT_SINGLELINE);
-        right = left - STATUS_GAP;
+        right = left - S(STATUS_GAP);
         return true;
     }
 }

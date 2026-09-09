@@ -266,6 +266,22 @@ internal static class Native
 
     [DllImport("kernel32.dll")] public static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
     [DllImport("kernel32.dll")] public static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS lpSystemPowerStatus);
+    public const int LOGPIXELSX = 88;
+    public const uint SND_ASYNC = 0x0001;
+    public const uint SND_NODEFAULT = 0x0002;
+    public const uint SND_FILENAME = 0x00020000;
+    public const int FW_NORMAL = 400;
+    public const uint DEFAULT_CHARSET = 1;
+    public const uint OUT_DEFAULT_PRECIS = 0;
+    public const uint CLIP_DEFAULT_PRECIS = 0;
+    public const uint CLEARTYPE_QUALITY = 5;
+    public const uint DEFAULT_PITCH = 0;
+
+    [DllImport("user32.dll")] public static extern nint GetDC(nint hwnd);
+    [DllImport("user32.dll")] public static extern int ReleaseDC(nint hwnd, nint hdc);
+    [DllImport("gdi32.dll")] public static extern int GetDeviceCaps(nint hdc, int index);
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode)] public static extern nint CreateFontW(int height, int width, int escapement, int orientation, int weight, uint italic, uint underline, uint strikeOut, uint charSet, uint outPrecision, uint clipPrecision, uint quality, uint pitchAndFamily, string faceName);
+    [DllImport("winmm.dll", CharSet = CharSet.Unicode)] public static extern bool PlaySoundW(string? pszSound, nint hmod, uint fdwSound);
     [DllImport("ole32.dll")] public static extern int CoCreateInstance(ref Guid rclsid, nint pUnkOuter, int dwClsContext, ref Guid riid, out nint ppv);
     [DllImport("user32.dll")] public static extern nint RegisterPowerSettingNotification(nint hRecipient, ref Guid powerSettingGuid, uint flags);
     [DllImport("user32.dll")] public static extern bool UnregisterPowerSettingNotification(nint handle);

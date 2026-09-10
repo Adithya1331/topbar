@@ -9,6 +9,9 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <AssemblyName>TopBar</AssemblyName>
+    <!-- Overridden by the release workflow with -p:Version=<tag>. 0.0.0 marks a local dev build,
+         which the self-updater never auto-replaces. -->
+    <Version>0.0.0</Version>
 
     <!-- Native AOT: no JIT, no CoreCLR; single native exe with a much smaller footprint. -->
     <PublishAot>true</PublishAot>

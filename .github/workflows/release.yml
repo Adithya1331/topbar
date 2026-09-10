@@ -21,18 +21,33 @@ jobs:
       # Primary artifact: Native AOT. Single native exe, no .NET runtime needed,
       # no JIT, smallest memory footprint. PublishAot is set in TopBar.csproj;
       # the MSVC linker it requires is preinstalled on windows-latest.
+      # The tag (v1.2.0) becomes the assembly version (1.2.0); the built-in updater
+      # compares it against the latest release tag.
+      - name: Derive version from tag
+        id: ver
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart("v")
+          "version=$v" >> $env:GITHUB_OUTPUT
+
       - name: Publish Native AOT
-        run: dotnet publish -c Release -r win-x64 -o publish-aot
+        run: dotnet publish -c Release -r win-x64 -p:Version=${{ steps.ver.outputs.version }} -o publish-aot
 
       # Fallback: framework-dependent single file for users who already have
       # the .NET 8 runtime and want the smallest download.
       - name: Publish framework-dependent (single file)
-        run: dotnet publish -c Release -r win-x64 --self-contained false -p:PublishAot=false -p:PublishSingleFile=true -o publish-fd
+        run: dotnet publish -c Release -r win-x64 --self-contained false -p:PublishAot=false -p:PublishSingleFile=true -p:Version=${{ steps.ver.outputs.version }} -o publish-fd
 
       - name: Rename artifacts
         run: |
           Move-Item publish-aot/TopBar.exe "TopBar-${{ github.ref_name }}-win-x64.exe"
           Move-Item publish-fd/TopBar.exe "TopBar-${{ github.ref_name }}-win-x64-framework.exe"
+
+      # Consumed by the in-app updater to verify downloads before swapping the exe.
+      - name: Write checksums
+        run: |
+          Get-FileHash TopBar-*.exe -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content SHA256SUMS.txt -Encoding ascii
 
       - name: Release
         uses: softprops/action-gh-release@v2
@@ -40,4 +55,5 @@ jobs:
           files: |
             TopBar-*-win-x64.exe
             TopBar-*-win-x64-framework.exe
+            SHA256SUMS.txt
           generate_release_notes: true

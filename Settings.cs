@@ -35,6 +35,20 @@ internal sealed class Settings
     public string HotkeyOpenMonkeytype { get; set; } = "Win+Shift+M";
     public string HotkeyOpenProfile { get; set; } = "Win+Shift+P";
 
+    /// <summary>
+    /// Monkeytype streak-day boundary, in hours relative to UTC midnight (the account's
+    /// "streak hour offset"). Read from /users/streak and cached here because the API
+    /// only lets a user change it once, so it is effectively immutable.
+    /// </summary>
+    public int StreakHourOffset { get; set; }
+    public bool StreakHourOffsetKnown { get; set; }
+    public bool StreakGuardianEnabled { get; set; } = true;
+    /// <summary>Warn when no test has been done and fewer than this many hours remain in the streak day.</summary>
+    public int StreakWarnHours { get; set; } = 3;
+
+    /// <summary>Self-updater behaviour: 0 = off, 1 = notify in the bar, 2 = install automatically.</summary>
+    public int UpdateMode { get; set; } = 1;
+
     public static string FilePath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MonkeyBar", "settings.json");
 
@@ -51,6 +65,9 @@ internal sealed class Settings
         ColorMode = Math.Clamp(ColorMode, 0, 1);
         RefreshInterval = Math.Clamp(RefreshInterval, 60, 7 * 86400);
         FocusDurationMinutes = Math.Clamp(FocusDurationMinutes, 5, 120);
+        StreakHourOffset = Math.Clamp(StreakHourOffset, -12, 14);
+        StreakWarnHours = Math.Clamp(StreakWarnHours, 1, 12);
+        UpdateMode = Math.Clamp(UpdateMode, 0, 2);
         if (RightClickAction != "profile") RightClickAction = "homepage";
     }
 

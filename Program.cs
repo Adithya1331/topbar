@@ -15,6 +15,7 @@ internal static class Program
     private const uint WM_APPBAR_CALLBACK = 0x8000 | 0x0001;
     private const uint WM_APP_REFRESH = 0x8000 | 0x0002;
     internal const uint WM_APP_VOLUME = 0x8000 | 0x0003;
+    private const uint WM_APP_UPDATE = 0x8000 | 0x0004;
 
     private const nint TIMER_REFRESH = 1;
     private const nint TIMER_CLOCK = 2;
@@ -22,11 +23,16 @@ internal static class Program
     private const nint TIMER_POMO = 4;
     private const nint TIMER_RESUME_REFRESH = 5;
     private const nint TIMER_FOCUS = 6;
+    private const nint TIMER_UPDATE = 7;
+
+    private const uint UPDATE_FIRST_CHECK_MS = 90_000;
+    private const uint UPDATE_CHECK_INTERVAL_MS = 24 * 3600 * 1000;
 
     private const int CMD_REFRESH = 10;
     private const int CMD_SETTINGS = 11;
     private const int CMD_OPEN = 12;
     private const int CMD_QUIT = 13;
+    private const int CMD_UPDATE = 14;
 
     private const int HK_REFRESH = 1;
     private const int HK_OPEN = 2;
@@ -59,16 +65,31 @@ internal static class Program
     private static readonly List<nint> s_powerNotificationHandles = [];
     private static double s_scale = 1.0;
     private static nint s_font;
+    private static StreakInfo? s_streak;
+    private static GuardianStatus s_guardian = GuardianStatus.None;
+    private static long s_guardianAlertedDay = long.MinValue;
+    private static int s_guardianLeft;
+    private static int s_guardianRight;
+    private static int s_updateLeft;
+    private static int s_updateRight;
 
     /// <summary>Scales a 96-DPI design pixel value to the current system DPI.</summary>
-    private static int S(int px) => (int)Math.Round(px * s_scale);
+    internal static int S(int px) => (int)Math.Round(px * s_scale);
+    internal static float Sf(float px) => (float)(px * s_scale);
 
     private static unsafe int Main()
     {
-        using var mutex = new Mutex(true, @"Local\MonkeyBar-TopBar", out bool createdNew);
-        if (!createdNew) return 0;
+        // Single instance. After a self-update the new exe is started while the old one is still
+        // shutting down, so in that case wait for the mutex instead of giving up immediately.
+        bool relaunched = Environment.GetCommandLineArgs().Contains(Updater.UpdatedArg, StringComparer.Ordinal);
+        using var mutex = new Mutex(false, @"Local\MonkeyBar-TopBar");
+        bool owned;
+        try { owned = mutex.WaitOne(relaunched ? 15_000 : 0); }
+        catch (AbandonedMutexException) { owned = true; }
+        if (!owned) return 0;
 
         s_settings = Settings.Load();
+        _ = Updater.CleanupOldBinary();
         Native.SetProcessDPIAware();
         InitScaling();
         s_taskbarCreated = Native.RegisterWindowMessageW("TaskbarCreated");
@@ -86,6 +107,7 @@ internal static class Program
         _ = Native.RegisterClassExW(ref wc);
 
         SettingsDialog.RegisterClass(hInstance);
+        CalendarPopup.RegisterClass(hInstance);
 
         s_hwnd = Native.CreateWindowExW(
             Native.WS_EX_TOPMOST | Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE,
@@ -123,6 +145,7 @@ internal static class Program
         if (s_settings.ShowVolume) VolumeInfo.Start(s_hwnd);
         if (s_settings.ShowFocusTimer) FocusTimer.Reset(s_settings.FocusDurationMinutes);
         _ = RefreshAsync();
+        Native.SetTimer(s_hwnd, TIMER_UPDATE, UPDATE_FIRST_CHECK_MS, default);
 
         while (Native.GetMessageW(out Native.MSG msg, default, 0, 0) > 0)
         {
@@ -156,10 +179,12 @@ internal static class Program
     private static nint UiFont() => s_font != default ? s_font : Native.GetStockObject(Native.DEFAULT_GUI_FONT);
 
     /// <summary>Plays the Windows alarm sound; falls back to the system beep if the file is missing.</summary>
-    private static void PlayFocusDoneSound()
+    private static void PlayFocusDoneSound() => PlaySound("Alarm01.wav");
+
+    private static void PlaySound(string mediaFile)
     {
-        string alarm = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Media", "Alarm01.wav");
-        if (!File.Exists(alarm) || !Native.PlaySoundW(alarm, default, Native.SND_FILENAME | Native.SND_ASYNC | Native.SND_NODEFAULT))
+        string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Media", mediaFile);
+        if (!File.Exists(path) || !Native.PlaySoundW(path, default, Native.SND_FILENAME | Native.SND_ASYNC | Native.SND_NODEFAULT))
             _ = Native.MessageBeep(0x00000040);
     }
 
@@ -210,6 +235,10 @@ internal static class Program
         {
             var st = await MonkeytypeService.FetchTypingActivityAsync(snap);
             if (st.HasData || !s_state.HasData) s_state = st;
+
+            // Sequential, never parallel: keeps us well inside the shared 30 req/min budget.
+            var streak = await MonkeytypeService.FetchStreakAsync(snap);
+            if (streak is not null) s_streak = streak;
         }
         catch
         {
@@ -220,6 +249,107 @@ internal static class Program
         {
             Volatile.Write(ref s_refreshing, 0);
             _ = Native.PostMessageW(s_hwnd, WM_APP_REFRESH, 0, 0);
+        }
+    }
+
+    /// <summary>
+    /// Runs on the UI thread after each refresh: caches the streak hour offset in settings the
+    /// first time we see it (the API allows changing it only once, so it's stable), then
+    /// re-evaluates the guardian and pushes fresh data to the calendar popup.
+    /// </summary>
+    private static void OnDataRefreshed(nint hwnd)
+    {
+        if (s_streak is { } streak && (!s_settings.StreakHourOffsetKnown || s_settings.StreakHourOffset != streak.HourOffset))
+        {
+            s_settings.StreakHourOffset = streak.HourOffset;
+            s_settings.StreakHourOffsetKnown = true;
+            try { s_settings.Save(); } catch { }
+        }
+        EvaluateGuardian(hwnd, playSound: true);
+        CalendarPopup.Update(s_state, s_streak, s_guardian, s_settings);
+    }
+
+    /// <summary>Cheap local computation; called every minute and after each refresh.</summary>
+    private static void EvaluateGuardian(nint hwnd, bool playSound)
+    {
+        GuardianStatus prev = s_guardian;
+        s_guardian = StreakGuardian.Evaluate(s_streak, s_settings, DateTimeOffset.Now);
+
+        if (playSound && s_guardian.IsWarning && s_guardianAlertedDay != s_guardian.StreakDay)
+        {
+            s_guardianAlertedDay = s_guardian.StreakDay;
+            PlaySound("Windows Notify System Generic.wav");
+        }
+
+        if (prev.IsWarning != s_guardian.IsWarning || (s_guardian.IsWarning && prev.TimeLeftText != s_guardian.TimeLeftText))
+        {
+            InvalidateStatusArea(hwnd);
+            var boxes = new Native.RECT { Left = s_boxLeft - 4, Top = 0, Right = s_boxRight + 4, Bottom = s_settings.BarHeight };
+            _ = Native.InvalidateRect(hwnd, ref boxes, false);
+        }
+    }
+
+    // ---- Self-update -------------------------------------------------------------------------------
+
+    private static void CheckForUpdates(bool manual)
+    {
+        if (!manual && (s_settings.UpdateMode == 0 || Updater.IsDevBuild)) return;
+        _ = Updater.CheckAsync(s_hwnd, WM_APP_UPDATE, manual);
+    }
+
+    private static void InstallUpdate()
+    {
+        if (Updater.State != UpdateState.Available) return;
+        _ = Updater.InstallAsync(s_hwnd, WM_APP_UPDATE);
+    }
+
+    /// <summary>Runs on the UI thread whenever the updater changes state.</summary>
+    private static void OnUpdateStateChanged(nint hwnd, nuint wParam)
+    {
+        if (wParam == 2)
+        {
+            // Exe already swapped on disk: start the new one and leave. The new instance waits
+            // for our mutex, then removes TopBar.old.exe.
+            Updater.Relaunch();
+            Native.DestroyWindow(hwnd);
+            return;
+        }
+
+        if (Updater.State == UpdateState.Available && s_settings.UpdateMode == 2 && !FocusTimer.IsRunning)
+            InstallUpdate();
+
+        InvalidateStatusArea(hwnd);
+    }
+
+    /// <summary>Text and colour of the bar indicator; null when nothing should be shown.</summary>
+    private static (string Text, uint Color)? UpdateIndicator()
+    {
+        const uint green = 0x0070C088;
+        const uint amber = 0x003CA0E8;
+        const uint dim = 0x00999999;
+        return Updater.State switch
+        {
+            UpdateState.Available when Updater.Available is { } u => ($"Update {u.Tag}", green),
+            UpdateState.Installing => ("Updating…", dim),
+            UpdateState.Restarting => ("Restarting…", dim),
+            UpdateState.Failed => ("Update failed", amber),
+            _ => null,
+        };
+    }
+
+    private static void OnUpdateIndicatorClicked()
+    {
+        switch (Updater.State)
+        {
+            case UpdateState.Available:
+                InstallUpdate();
+                break;
+            case UpdateState.Failed:
+                // Manual fallback: let the user grab the exe from the release page.
+                _ = Native.ShellExecuteW(s_hwnd, "open", Updater.Available?.ReleaseUrl ?? Updater.ReleasesPage, null, null, Native.SW_SHOWNORMAL);
+                Updater.Dismiss();
+                InvalidateStatusArea(s_hwnd);
+                break;
         }
     }
 
@@ -368,6 +498,10 @@ internal static class Program
         {
             FocusTimer.Reset(s_settings.FocusDurationMinutes);
         }
+        CalendarPopup.Hide();
+        EvaluateGuardian(s_hwnd, playSound: false);
+        if (s_settings.UpdateMode == 0) Updater.Dismiss();
+        else if (Updater.State == UpdateState.Idle) CheckForUpdates(manual: false);
         _ = RefreshAsync();
         _ = Native.InvalidateRect(s_hwnd, default, true);
     }
@@ -430,6 +564,17 @@ internal static class Program
         _ = Native.AppendMenuW(menu, Native.MF_STRING, CMD_SETTINGS, "Settings");
         _ = Native.AppendMenuW(menu, Native.MF_STRING, CMD_OPEN, "Open Monkeytype");
         _ = Native.AppendMenuW(menu, Native.MF_SEPARATOR, 0, null);
+        string updateItem = Updater.State switch
+        {
+            UpdateState.Available when Updater.Available is { } u => $"Install update {u.Tag}",
+            UpdateState.Checking => "Checking for updates…",
+            UpdateState.Installing or UpdateState.Restarting => "Installing update…",
+            _ => "Check for updates",
+        };
+        bool updateBusy = Updater.State is UpdateState.Checking or UpdateState.Installing or UpdateState.Restarting;
+        _ = Native.AppendMenuW(menu, Native.MF_STRING | (updateBusy ? Native.MF_GRAYED : 0), CMD_UPDATE, updateItem);
+        AppendDisabled(menu, $"MonkeyBar {Updater.VersionText}");
+        _ = Native.AppendMenuW(menu, Native.MF_SEPARATOR, 0, null);
         _ = Native.AppendMenuW(menu, Native.MF_STRING, CMD_QUIT, "Quit");
 
         _ = Native.GetCursorPos(out Native.POINT pt);
@@ -447,6 +592,10 @@ internal static class Program
                 break;
             case CMD_OPEN:
                 OpenMonkeytype();
+                break;
+            case CMD_UPDATE:
+                if (Updater.State == UpdateState.Available) InstallUpdate();
+                else CheckForUpdates(manual: true);
                 break;
             case CMD_QUIT:
                 Native.DestroyWindow(s_hwnd);
@@ -481,6 +630,26 @@ internal static class Program
     {
         int x = (short)(lParam & 0xFFFF);
         return s_focusRight > s_focusLeft && x >= s_focusLeft - 3 && x <= s_focusRight + 3;
+    }
+
+    private static bool IsOverUpdate(nint lParam)
+    {
+        int x = (short)(lParam & 0xFFFF);
+        return s_updateRight > s_updateLeft && x >= s_updateLeft - 3 && x <= s_updateRight + 3;
+    }
+
+    private static bool IsOverClock(nint lParam)
+    {
+        int x = (short)(lParam & 0xFFFF);
+        return s_clockRight > s_clockLeft && x >= s_clockLeft && x <= s_clockRight;
+    }
+
+    private static void ToggleCalendar(nint hwnd)
+    {
+        _ = Native.GetWindowRect(hwnd, out Native.RECT bar);
+        int centerX = bar.Left + (s_clockLeft + s_clockRight) / 2;
+        CalendarPopup.Update(s_state, s_streak, s_guardian, s_settings);
+        CalendarPopup.Toggle(hwnd, centerX, bar.Bottom);
     }
 
     private static void ToggleFocusTimer(nint hwnd)
@@ -556,12 +725,20 @@ internal static class Program
                 if (IsOverPomo(lParam)) OpenRoundPie();
                 else if (IsOverFocusTimer(lParam)) ToggleFocusTimer(hwnd);
                 else if (IsOverVolume(lParam)) VolumeInfo.ToggleMute();
+                else if (IsOverUpdate(lParam)) OnUpdateIndicatorClicked();
                 else if (IsOverBoxes(lParam)) OpenMonkeytype();
+                else if (IsOverClock(lParam)) ToggleCalendar(hwnd);
                 return default;
 
             case Native.WM_RBUTTONUP:
                 if (IsOverBoxes(lParam)) ShowMenu();
                 else if (IsOverFocusTimer(lParam)) ResetFocusTimer(hwnd);
+                else if (IsOverUpdate(lParam))
+                {
+                    // Hide the indicator until the next daily check.
+                    Updater.Dismiss();
+                    InvalidateStatusArea(hwnd);
+                }
                 return default;
 
             case Native.WM_MOUSEWHEEL:
@@ -584,6 +761,8 @@ internal static class Program
                         s_lastMinute = m;
                         InvalidateClockArea(hwnd);
                     }
+                    EvaluateGuardian(hwnd, playSound: true);
+                    if (CalendarPopup.IsVisible) CalendarPopup.Update(s_state, s_streak, s_guardian, s_settings);
                     ArmClockTimer(hwnd);
                 }
                 else if (wParam == (nuint)TIMER_SYSINFO)
@@ -614,13 +793,28 @@ internal static class Program
                     {
                         Native.KillTimer(hwnd, TIMER_FOCUS);
                         PlayFocusDoneSound();
+                        // A deferred auto-install (we don't restart mid-focus) can go ahead now.
+                        if (Updater.State == UpdateState.Available && s_settings.UpdateMode == 2) InstallUpdate();
                     }
                     InvalidateFocusArea(hwnd);
+                }
+                else if (wParam == (nuint)TIMER_UPDATE)
+                {
+                    // First fire is 90 s after launch, then daily. One unauthenticated GitHub
+                    // API call per check; the limit is 60/hour per IP.
+                    Native.SetTimer(hwnd, TIMER_UPDATE, UPDATE_CHECK_INTERVAL_MS, default);
+                    _ = Updater.CleanupOldBinary();
+                    CheckForUpdates(manual: false);
                 }
                 return default;
 
             case WM_APP_REFRESH:
+                OnDataRefreshed(hwnd);
                 _ = Native.InvalidateRect(hwnd, default, true);
+                return default;
+
+            case WM_APP_UPDATE:
+                OnUpdateStateChanged(hwnd, wParam);
                 return default;
 
             case WM_APP_VOLUME:
@@ -676,6 +870,7 @@ internal static class Program
                 return default;
 
             case Native.WM_DESTROY:
+                CalendarPopup.Destroy();
                 UnregisterAppBar(hwnd);
                 Native.UnregisterHotKey(hwnd, HK_REFRESH);
                 Native.UnregisterHotKey(hwnd, HK_OPEN);
@@ -686,6 +881,7 @@ internal static class Program
                 Native.KillTimer(hwnd, TIMER_POMO);
                 Native.KillTimer(hwnd, TIMER_RESUME_REFRESH);
                 Native.KillTimer(hwnd, TIMER_FOCUS);
+                Native.KillTimer(hwnd, TIMER_UPDATE);
                 UnregisterPowerNotifications();
                 VolumeInfo.Stop();
                 foreach (nint b in s_brushCache.Values) Native.DeleteObject(b);
@@ -714,7 +910,7 @@ internal static class Program
         }
     }
 
-    private static uint Blend(uint fg, uint bg, double alpha)
+    internal static uint Blend(uint fg, uint bg, double alpha)
     {
         int fr = (int)(fg & 0xFF), fgc = (int)((fg >> 8) & 0xFF), fb = (int)((fg >> 16) & 0xFF);
         int br = (int)(bg & 0xFF), bgc = (int)((bg >> 8) & 0xFF), bb = (int)((bg >> 16) & 0xFF);
@@ -852,7 +1048,20 @@ internal static class Program
             int statusRight = s_boxLeft - S(10);
             string? sys = s.ShowCpuRam && SysInfo.Text.Length > 0 ? SysInfo.Text : null;
             bool statusFits = true;
-            if (s.ShowCpuRam)
+
+            s_updateLeft = s_updateRight = 0;
+            if (UpdateIndicator() is { } upd)
+            {
+                statusFits = DrawDotStatus(hdc, upd.Text, upd.Color, ref statusRight, s_statusLeftLimit, rc, dirty, out s_updateLeft, out s_updateRight);
+            }
+
+            s_guardianLeft = s_guardianRight = 0;
+            if (statusFits && s_guardian.IsWarning)
+            {
+                statusFits = DrawDotStatus(hdc, s_guardian.TimeLeftText + " left", 0x003CA0E8, ref statusRight, s_statusLeftLimit, rc, dirty, out s_guardianLeft, out s_guardianRight);
+            }
+
+            if (statusFits && s.ShowCpuRam)
             {
                 s_lastSysText = sys ?? "";
                 statusFits = DrawCpuStatus(hdc, sys, ref statusRight, s_statusLeftLimit, rc, dirty);
@@ -893,9 +1102,39 @@ internal static class Program
     /// <summary>True when the horizontal span [left, right) overlaps the invalidated rect.</summary>
     private static bool Hits(in Native.RECT dirty, int left, int right) => right > dirty.Left && left < dirty.Right;
 
+    /// <summary>Coloured dot + short text (streak guardian warning, update notice).</summary>
+    private static bool DrawDotStatus(nint hdc, string text, uint color, ref int right, int leftLimit, Native.RECT bounds, in Native.RECT dirty, out int left, out int itemRight)
+    {
+        Native.SIZE size = default;
+        _ = Native.GetTextExtentPoint32W(hdc, text, text.Length, ref size);
+        int dot = S(7);
+        int gap = S(5);
+        itemRight = right;
+        left = right - (dot + gap + size.cx);
+        if (left < leftLimit)
+        {
+            left = itemRight = 0;
+            return false;
+        }
+
+        if (Hits(dirty, left, right))
+        {
+            int cy = (bounds.Bottom - bounds.Top) / 2;
+            _ = Native.SelectObject(hdc, Native.GetStockObject(Native.NULL_PEN));
+            _ = Native.SelectObject(hdc, GetBrush(color));
+            _ = Native.Ellipse(hdc, left, cy - dot / 2, left + dot + 1, cy - dot / 2 + dot + 1);
+            Native.SetTextColor(hdc, color);
+            var textRc = new Native.RECT { Left = left + dot + gap, Top = bounds.Top, Right = right, Bottom = bounds.Bottom };
+            _ = Native.DrawTextW(hdc, text, -1, ref textRc, Native.DT_LEFT | Native.DT_VCENTER | Native.DT_SINGLELINE);
+        }
+        right = left - S(STATUS_GAP);
+        return true;
+    }
+
     private static void DrawActivityBoxes(nint hdc, Settings s, ActivityState st, Theme theme, int days, int x, int y, int box, int boxGap)
     {
         int radius = S(BOX_RADIUS) * 2;
+        bool warn = s_guardian.IsWarning;
         for (int i = 0; i < days; i++)
         {
             int count = st.HasData && !st.IsStreakOnly && i < st.Counts.Length ? st.Counts[i] : 0;
@@ -921,11 +1160,11 @@ internal static class Program
             _ = Native.SelectObject(hdc, GetBrush(Blend(fill, BAR_BG, alpha)));
             _ = Native.RoundRect(hdc, x, y, x + box - 1, y + box - 1, radius, radius);
 
-            if (s.HighlightCurrentDay
-                && st.HasData && !st.IsStreakOnly
-                && i < st.Dates.Length && st.Dates[i] == DateTime.Today)
+            bool isToday = st.HasData && i < st.Dates.Length && st.Dates[i] == DateTime.Today;
+            if (isToday && (warn || (s.HighlightCurrentDay && !st.IsStreakOnly)))
             {
-                nint hlBrush = GetBrush(Blend(0x00FFFFFF, BAR_BG, 0.6));
+                // Streak at risk overrides the normal highlight with an amber ring.
+                nint hlBrush = GetBrush(warn ? 0x003CA0E8u : Blend(0x00FFFFFF, BAR_BG, 0.6));
                 var outer = new Native.RECT { Left = x - 2, Top = y - 2, Right = x + box + 1, Bottom = y + box + 1 };
                 var inner = new Native.RECT { Left = x - 1, Top = y - 1, Right = x + box, Bottom = y + box };
                 _ = Native.FrameRect(hdc, ref outer, hlBrush);

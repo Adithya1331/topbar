@@ -8,15 +8,47 @@ internal sealed class ActivityState
     public bool IsStreakOnly { get; set; }
     public int Streak { get; set; }
     public int MaxStreak { get; set; }
+    public int TotalTests { get; set; }
+    public long TimeTypingSeconds { get; set; }
     public DateTime[] Dates { get; set; } = [];
     public int[] Counts { get; set; } = [];
+    /// <summary>Every day returned by the API (up to 372), keyed by local calendar date.</summary>
+    public Dictionary<DateTime, int> ByDay { get; set; } = [];
 }
+
+/// <summary>Snapshot of /users/streak. Timestamps are Unix milliseconds.</summary>
+internal sealed record StreakInfo(int Length, int MaxLength, long LastResultTimestampMs, int HourOffset);
 
 internal static class MonkeytypeService
 {
     private const string BaseUrl = "https://api.monkeytype.com";
 
     private static readonly HttpClient s_http = new() { Timeout = TimeSpan.FromSeconds(15) };
+
+    /// <summary>
+    /// Fetches streak data (needs an ApeKey). Returns null on any failure so callers keep
+    /// their previous value; a 429/479 should never wipe good cached state.
+    /// </summary>
+    public static async Task<StreakInfo?> FetchStreakAsync(Settings s)
+    {
+        if (string.IsNullOrWhiteSpace(s.ApeKey)) return null;
+        try
+        {
+            using var resp = await SendAsync($"{BaseUrl}/users/streak", s.ApeKey);
+            if (!resp.IsSuccessStatusCode) return null;
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            var data = doc.RootElement.GetProperty("data");
+            if (data.ValueKind != JsonValueKind.Object) return null;
+
+            long last = data.TryGetProperty("lastResultTimestamp", out var lr) && lr.ValueKind == JsonValueKind.Number ? lr.GetInt64() : 0;
+            int hourOffset = GetInt(data, "hourOffset");
+            return new StreakInfo(GetInt(data, "length"), GetInt(data, "maxLength"), last, hourOffset);
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     public static DateTime[] GetDates(Settings s)
     {
@@ -54,7 +86,7 @@ internal static class MonkeytypeService
             using (var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()))
             {
                 var data = doc.RootElement.GetProperty("data");
-                if (TryGetActivityElement(data, out var ta)) return ParseTestActivity(ta, dates, iso);
+                if (TryGetActivityElement(data, out var ta)) return FillProfileMeta(ParseTestActivity(ta, dates, iso), data);
             }
 
             using (var resp = await SendAsync($"{BaseUrl}/users/currentTestActivity", s.ApeKey))
@@ -80,16 +112,14 @@ internal static class MonkeytypeService
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
             var data = doc.RootElement.GetProperty("data");
 
-            if (TryGetActivityElement(data, out var ta)) return ParseTestActivity(ta, dates, iso);
+            if (TryGetActivityElement(data, out var ta)) return FillProfileMeta(ParseTestActivity(ta, dates, iso), data);
 
-            return new ActivityState
+            return FillProfileMeta(new ActivityState
             {
                 IsStreakOnly = true,
-                Streak = GetInt(data, "streak"),
-                MaxStreak = GetInt(data, "maxStreak"),
                 Dates = dates,
                 Counts = new int[dates.Length],
-            };
+            }, data);
         }
         catch
         {
@@ -131,9 +161,24 @@ internal static class MonkeytypeService
         return false;
     }
 
+    /// <summary>Copies streak and lifetime totals from a /profile payload onto the state.</summary>
+    private static ActivityState FillProfileMeta(ActivityState st, JsonElement data)
+    {
+        st.Streak = GetInt(data, "streak");
+        st.MaxStreak = GetInt(data, "maxStreak");
+        if (data.TryGetProperty("typingStats", out var ts) && ts.ValueKind == JsonValueKind.Object)
+        {
+            st.TotalTests = GetInt(ts, "completedTests");
+            if (ts.TryGetProperty("timeTyping", out var tt) && tt.ValueKind == JsonValueKind.Number)
+                st.TimeTypingSeconds = (long)tt.GetDouble();
+        }
+        return st;
+    }
+
     private static ActivityState ParseTestActivity(JsonElement testActivity, DateTime[] dates, string[] iso)
     {
         var map = new Dictionary<string, int>();
+        var byDay = new Dictionary<DateTime, int>();
         try
         {
             var tbd = testActivity.GetProperty("testsByDays");
@@ -158,6 +203,7 @@ internal static class MonkeytypeService
                     if (tbd[i].ValueKind == JsonValueKind.Number && tbd[i].TryGetInt32(out int v))
                         c = Math.Max(0, v);
                     map[d.ToString("yyyy-MM-dd")] = c;
+                    byDay[d] = c;
                 }
             }
         }
@@ -167,7 +213,7 @@ internal static class MonkeytypeService
 
         var counts = new int[dates.Length];
         for (int i = 0; i < dates.Length; i++) counts[i] = map.TryGetValue(iso[i], out int c) ? c : 0;
-        return new ActivityState { Dates = dates, Counts = counts };
+        return new ActivityState { Dates = dates, Counts = counts, ByDay = byDay };
     }
 
     private static ActivityState Zeros(DateTime[] dates) => new() { Dates = dates, Counts = new int[dates.Length] };

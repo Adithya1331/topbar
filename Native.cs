@@ -51,6 +51,7 @@ internal static class Native
     public const uint DT_END_ELLIPSIS = 0x00008000;
     public const uint WS_BORDER = 0x00800000u;
     public const int NULL_PEN = 8;
+    public const int NULL_BRUSH = 5;
     public const uint VK_ESCAPE = 0x1B;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -82,6 +83,7 @@ internal static class Native
     public const uint SWP_NOACTIVATE = 0x0010;
     public const uint SWP_SHOWWINDOW = 0x0040;
     public const int SM_CXSCREEN = 0;
+    public const int SM_CYSCREEN = 1;
 
     public const uint MF_STRING = 0x00000000;
     public const uint MF_GRAYED = 0x00000001;
@@ -266,6 +268,42 @@ internal static class Native
 
     [DllImport("kernel32.dll")] public static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
     [DllImport("kernel32.dll")] public static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS lpSystemPowerStatus);
+    public const uint WM_ACTIVATE = 0x0006;
+    public const uint WM_MOUSELEAVE = 0x02A3;
+    public const uint WM_SHOWWINDOW = 0x0018;
+    public const uint WA_INACTIVE = 0;
+    public const uint CS_DROPSHADOW = 0x00020000;
+    public const int SW_HIDE = 0;
+    public const int SW_SHOWNOACTIVATE = 4;
+    public const int SW_SHOW = 5;
+    public const int SRCCOPY = 0x00CC0020;
+    public const int FW_SEMIBOLD = 600;
+    public const uint DT_NOPREFIX = 0x00000800;
+    public const uint TME_LEAVE = 0x00000002;
+    public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    public const int DWMWCP_ROUND = 2;
+    public const uint SWP_NOSIZE = 0x0001;
+    public const uint SWP_NOMOVE = 0x0002;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct TRACKMOUSEEVENT
+    {
+        public uint cbSize;
+        public uint dwFlags;
+        public nint hwndTrack;
+        public uint dwHoverTime;
+    }
+
+    [DllImport("user32.dll")] public static extern bool ShowWindow(nint hWnd, int nCmdShow);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(nint hWnd);
+    [DllImport("user32.dll")] public static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT lpEventTrack);
+    [DllImport("gdi32.dll")] public static extern nint CreateCompatibleDC(nint hdc);
+    [DllImport("gdi32.dll")] public static extern nint CreateCompatibleBitmap(nint hdc, int cx, int cy);
+    [DllImport("gdi32.dll")] public static extern bool DeleteDC(nint hdc);
+    [DllImport("gdi32.dll")] public static extern bool BitBlt(nint hdc, int x, int y, int cx, int cy, nint hdcSrc, int x1, int y1, int rop);
+    [DllImport("gdi32.dll")] public static extern bool Rectangle(nint hdc, int left, int top, int right, int bottom);
+    [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(nint hwnd, int attr, ref int value, int size);
+
     public const int LOGPIXELSX = 88;
     public const uint SND_ASYNC = 0x0001;
     public const uint SND_NODEFAULT = 0x0002;

@@ -37,6 +37,11 @@ internal static class Program
     private const int HK_REFRESH = 1;
     private const int HK_OPEN = 2;
     private const int HK_PROFILE = 3;
+    private const int HK_TOGGLE_BAR = 4;
+    private const int CMD_HIDE = 16;
+
+    /// <summary>True while the bar is hidden via the toggle hotkey; the AppBar reservation is released meanwhile.</summary>
+    private static bool s_hidden;
 
     private static nint s_hwnd;
     private static uint s_taskbarCreated;
@@ -406,9 +411,11 @@ internal static class Program
         Native.UnregisterHotKey(s_hwnd, HK_REFRESH);
         Native.UnregisterHotKey(s_hwnd, HK_OPEN);
         Native.UnregisterHotKey(s_hwnd, HK_PROFILE);
+        Native.UnregisterHotKey(s_hwnd, HK_TOGGLE_BAR);
         TryRegisterHotKey(HK_REFRESH, s_settings.HotkeyRefresh, 'R');
         TryRegisterHotKey(HK_OPEN, s_settings.HotkeyOpenMonkeytype, 'M');
         TryRegisterHotKey(HK_PROFILE, s_settings.HotkeyOpenProfile, 'P');
+        TryRegisterHotKey(HK_TOGGLE_BAR, s_settings.HotkeyToggleBar, 'H');
     }
 
     private static void TryRegisterHotKey(int id, string? spec, char fallbackKey)
@@ -439,6 +446,28 @@ internal static class Program
             return;
         }
         _ = Native.ShellExecuteW(s_hwnd, "open", $"https://monkeytype.com/profile/{Uri.EscapeDataString(s_settings.Username)}", null, null, Native.SW_SHOWNORMAL);
+    }
+
+    /// <summary>
+    /// Hides or restores the bar. Hiding also removes the AppBar work-area reservation so
+    /// maximized windows reclaim the strip; restoring re-registers and re-docks it.
+    /// </summary>
+    private static void ToggleBarVisibility(nint hwnd)
+    {
+        if (!s_hidden)
+        {
+            s_hidden = true;
+            CalendarPopup.Hide();
+            UnregisterAppBar(hwnd);
+            _ = Native.ShowWindow(hwnd, Native.SW_HIDE);
+        }
+        else
+        {
+            s_hidden = false;
+            RegisterAppBar(hwnd);
+            MoveAppBar(hwnd); // SWP_SHOWWINDOW inside makes it visible again without activating
+            _ = Native.InvalidateRect(hwnd, default, true);
+        }
     }
 
     private static void OpenRoundPie()
@@ -575,6 +604,7 @@ internal static class Program
         _ = Native.AppendMenuW(menu, Native.MF_STRING | (updateBusy ? Native.MF_GRAYED : 0), CMD_UPDATE, updateItem);
         AppendDisabled(menu, $"MonkeyBar {Updater.VersionText}");
         _ = Native.AppendMenuW(menu, Native.MF_SEPARATOR, 0, null);
+        _ = Native.AppendMenuW(menu, Native.MF_STRING, CMD_HIDE, $"Hide bar\t{s_settings.HotkeyToggleBar}");
         _ = Native.AppendMenuW(menu, Native.MF_STRING, CMD_QUIT, "Quit");
 
         _ = Native.GetCursorPos(out Native.POINT pt);
@@ -596,6 +626,9 @@ internal static class Program
             case CMD_UPDATE:
                 if (Updater.State == UpdateState.Available) InstallUpdate();
                 else CheckForUpdates(manual: true);
+                break;
+            case CMD_HIDE:
+                ToggleBarVisibility(s_hwnd);
                 break;
             case CMD_QUIT:
                 Native.DestroyWindow(s_hwnd);
@@ -862,11 +895,14 @@ internal static class Program
                     case HK_PROFILE:
                         OpenProfile();
                         break;
+                    case HK_TOGGLE_BAR:
+                        ToggleBarVisibility(hwnd);
+                        break;
                 }
                 return default;
 
             case Native.WM_DISPLAYCHANGE:
-                MoveAppBar(hwnd);
+                if (!s_hidden) MoveAppBar(hwnd);
                 return default;
 
             case Native.WM_DESTROY:
@@ -875,6 +911,7 @@ internal static class Program
                 Native.UnregisterHotKey(hwnd, HK_REFRESH);
                 Native.UnregisterHotKey(hwnd, HK_OPEN);
                 Native.UnregisterHotKey(hwnd, HK_PROFILE);
+                Native.UnregisterHotKey(hwnd, HK_TOGGLE_BAR);
                 Native.KillTimer(hwnd, TIMER_REFRESH);
                 Native.KillTimer(hwnd, TIMER_CLOCK);
                 Native.KillTimer(hwnd, TIMER_SYSINFO);
@@ -902,8 +939,12 @@ internal static class Program
             default:
                 if (msg == s_taskbarCreated && s_taskbarCreated != 0)
                 {
-                    RegisterAppBar(hwnd);
-                    MoveAppBar(hwnd);
+                    // Explorer restarted: re-dock, unless the user has the bar hidden right now.
+                    if (!s_hidden)
+                    {
+                        RegisterAppBar(hwnd);
+                        MoveAppBar(hwnd);
+                    }
                     return default;
                 }
                 return Native.DefWindowProcW(hwnd, msg, wParam, lParam);

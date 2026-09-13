@@ -34,6 +34,8 @@ internal sealed class Settings
     public string HotkeyRefresh { get; set; } = "Win+Shift+R";
     public string HotkeyOpenMonkeytype { get; set; } = "Win+Shift+M";
     public string HotkeyOpenProfile { get; set; } = "Win+Shift+P";
+    /// <summary>Hides/shows the whole bar (e.g. for fullscreen video). Works while hidden too.</summary>
+    public string HotkeyToggleBar { get; set; } = "Win+Shift+H";
 
     /// <summary>
     /// Monkeytype streak-day boundary, in hours relative to UTC midnight (the account's

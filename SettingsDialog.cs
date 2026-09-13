@@ -239,7 +239,7 @@ internal static class SettingsDialog
         AddControl(hwnd, "BUTTON", "Cancel", Native.BS_PUSHBUTTON, 0, cx + 110, 722, 100, 30, IDC_CANCEL, font);
 
         AddControl(hwnd, "STATIC",
-            "Hotkeys: Win+Shift+R refresh · Win+Shift+M open Monkeytype · Win+Shift+P profile · click the clock for the calendar",
+            "Hotkeys: Win+Shift+R refresh · Win+Shift+M Monkeytype · Win+Shift+P profile · Win+Shift+H hide/show bar · click the clock for the calendar",
             0, 0, lx, 764, 468, 32, 208, font);
 
         FillCombo(s_ctl[CTL_INTERVAL], IntervalLabels, Array.IndexOf(Intervals, s_settings.RefreshInterval));

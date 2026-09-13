@@ -52,21 +52,7 @@ internal static class Updater
 
     public static string VersionText => IsDevBuild ? "dev build" : $"v{Current.ToString(3)}";
 
-    private static readonly string s_logPath = Path.Combine(Path.GetDirectoryName(Settings.FilePath)!, "update.log");
-
-    /// <summary>Small append-only diagnostic log next to settings.json; truncated when it grows past 64 KB.</summary>
-    private static void Log(string message)
-    {
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(s_logPath)!);
-            if (File.Exists(s_logPath) && new FileInfo(s_logPath).Length > 64 * 1024) File.Delete(s_logPath);
-            File.AppendAllText(s_logPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {message}{Environment.NewLine}");
-        }
-        catch
-        {
-        }
-    }
+    private static void Log(string message) => Diag.Log("update.log", message);
 
     /// <summary>
     /// Queries the latest release. On completion posts <paramref name="notifyMsg"/> to

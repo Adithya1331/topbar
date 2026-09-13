@@ -16,8 +16,8 @@ internal sealed class ActivityState
     public Dictionary<DateTime, int> ByDay { get; set; } = [];
 }
 
-/// <summary>Snapshot of /users/streak. Timestamps are Unix milliseconds.</summary>
-internal sealed record StreakInfo(int Length, int MaxLength, long LastResultTimestampMs, int HourOffset);
+/// <summary>Snapshot of /users/streak. Timestamps are Unix milliseconds; HourOffset is in half-hour steps.</summary>
+internal sealed record StreakInfo(int Length, int MaxLength, long LastResultTimestampMs, double HourOffset);
 
 internal static class MonkeytypeService
 {
@@ -32,23 +32,34 @@ internal static class MonkeytypeService
     public static async Task<StreakInfo?> FetchStreakAsync(Settings s)
     {
         if (string.IsNullOrWhiteSpace(s.ApeKey)) return null;
+        string body = "";
         try
         {
             using var resp = await SendAsync($"{BaseUrl}/users/streak", s.ApeKey);
+            body = await resp.Content.ReadAsStringAsync();
+            // Raw response goes to api.log so odd account setups (half-hour offsets, null data)
+            // can be diagnosed from a user's machine without a debugger.
+            Diag.Log("api.log", $"GET /users/streak -> {(int)resp.StatusCode} {Trim(body)}");
             if (!resp.IsSuccessStatusCode) return null;
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+
+            using var doc = JsonDocument.Parse(body);
             var data = doc.RootElement.GetProperty("data");
             if (data.ValueKind != JsonValueKind.Object) return null;
 
-            long last = data.TryGetProperty("lastResultTimestamp", out var lr) && lr.ValueKind == JsonValueKind.Number ? lr.GetInt64() : 0;
-            int hourOffset = GetInt(data, "hourOffset");
+            // hourOffset is a number in 0.5 steps (-11..12); the others are integers but are
+            // read leniently too, since GetInt32() throws on "5.0".
+            double hourOffset = GetDouble(data, "hourOffset");
+            long last = (long)GetDouble(data, "lastResultTimestamp");
             return new StreakInfo(GetInt(data, "length"), GetInt(data, "maxLength"), last, hourOffset);
         }
-        catch
+        catch (Exception ex)
         {
+            Diag.Log("api.log", $"/users/streak parse failed: {ex.GetType().Name}: {ex.Message}");
             return null;
         }
     }
+
+    private static string Trim(string s) => s.Length <= 600 ? s : s[..600] + "…";
 
     public static DateTime[] GetDates(Settings s)
     {
@@ -220,10 +231,12 @@ internal static class MonkeytypeService
 
     private static ActivityState Unavailable(DateTime[] dates) => new() { HasData = false, Dates = dates, Counts = new int[dates.Length] };
 
-    private static int GetInt(JsonElement e, string name)
+    private static int GetInt(JsonElement e, string name) => (int)Math.Round(GetDouble(e, name));
+
+    private static double GetDouble(JsonElement e, string name)
     {
         if (e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number)
-            return v.GetInt32();
+            return v.GetDouble();
         return 0;
     }
 }

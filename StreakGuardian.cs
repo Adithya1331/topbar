@@ -27,18 +27,21 @@ internal readonly record struct GuardianStatus(bool Available, bool TypedToday, 
 /// Monkeytype counts streaks in "streak days": UTC days shifted by the account's hour offset.
 /// A day index is floor((unixSeconds - hourOffset * 3600) / 86400). A test keeps the streak
 /// alive if its timestamp falls in the current index; the streak resets once a full index
-/// passes without one.
+/// passes without one. The offset is -11..12 in steps of 0.5 h (e.g. -5.5 for an IST
+/// midnight), so the shift is computed in whole seconds, not whole hours.
 /// </summary>
 internal static class StreakGuardian
 {
     private const long DaySeconds = 86400;
 
-    public static long DayIndex(DateTimeOffset t, int hourOffset)
-        => FloorDiv(t.ToUnixTimeSeconds() - hourOffset * 3600L, DaySeconds);
+    private static long OffsetSeconds(double hourOffset) => (long)Math.Round(hourOffset * 3600.0);
 
-    public static DateTimeOffset DayEnd(DateTimeOffset now, int hourOffset)
+    public static long DayIndex(DateTimeOffset t, double hourOffset)
+        => FloorDiv(t.ToUnixTimeSeconds() - OffsetSeconds(hourOffset), DaySeconds);
+
+    public static DateTimeOffset DayEnd(DateTimeOffset now, double hourOffset)
     {
-        long next = (DayIndex(now, hourOffset) + 1) * DaySeconds + hourOffset * 3600L;
+        long next = (DayIndex(now, hourOffset) + 1) * DaySeconds + OffsetSeconds(hourOffset);
         return DateTimeOffset.FromUnixTimeSeconds(next);
     }
 

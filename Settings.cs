@@ -37,10 +37,10 @@ internal sealed class Settings
 
     /// <summary>
     /// Monkeytype streak-day boundary, in hours relative to UTC midnight (the account's
-    /// "streak hour offset"). Read from /users/streak and cached here because the API
-    /// only lets a user change it once, so it is effectively immutable.
+    /// "streak hour offset", -11..12 in 0.5 steps). Read from /users/streak and cached here
+    /// because the API only lets a user change it once, so it is effectively immutable.
     /// </summary>
-    public int StreakHourOffset { get; set; }
+    public double StreakHourOffset { get; set; }
     public bool StreakHourOffsetKnown { get; set; }
     public bool StreakGuardianEnabled { get; set; } = true;
     /// <summary>Warn when no test has been done and fewer than this many hours remain in the streak day.</summary>
@@ -65,7 +65,7 @@ internal sealed class Settings
         ColorMode = Math.Clamp(ColorMode, 0, 1);
         RefreshInterval = Math.Clamp(RefreshInterval, 60, 7 * 86400);
         FocusDurationMinutes = Math.Clamp(FocusDurationMinutes, 5, 120);
-        StreakHourOffset = Math.Clamp(StreakHourOffset, -12, 14);
+        StreakHourOffset = double.IsFinite(StreakHourOffset) ? Math.Clamp(StreakHourOffset, -11, 12) : 0;
         StreakWarnHours = Math.Clamp(StreakWarnHours, 1, 12);
         UpdateMode = Math.Clamp(UpdateMode, 0, 2);
         if (RightClickAction != "profile") RightClickAction = "homepage";

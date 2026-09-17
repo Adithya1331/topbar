@@ -11,7 +11,7 @@ Minimal Windows top bar (pure Win32 + C# / .NET 8, zero UI-framework dependencie
 - Center clock, CPU/RAM monitor (toggleable)
 - AppBar docking, always-on-top, never steals focus
 - Left-click the boxes: open monkeytype.com - Right-click the boxes: menu (day breakdown, refresh, settings, quit)
-- Global hotkeys: `Win+Shift+R` refresh - `Win+Shift+M` open Monkeytype - `Win+Shift+P` profile
+- Global hotkeys: `Win+Shift+R` refresh - `Win+Shift+M` open Monkeytype - `Win+Shift+P` profile - `Win+Shift+B` hide/show bar
 - Settings UI (right-click boxes > Settings) persisted to `%APPDATA%\MonkeyBar\settings.json`
 - Start with Windows, customizable bar height (24-64 px)
 

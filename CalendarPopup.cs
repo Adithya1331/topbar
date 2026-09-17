@@ -25,7 +25,6 @@ internal static class CalendarPopup
     private static nint s_fontSmall;
     private static nint s_fontTitle;
     private static nint s_borderPen;
-    private static nint s_tooltipPen;
 
     private static ActivityState s_state = new() { HasData = false };
     private static StreakInfo? s_streak;
@@ -130,7 +129,6 @@ internal static class CalendarPopup
         s_fontSmall = MakeFont(11, Native.FW_NORMAL);
         s_fontTitle = MakeFont(14, Native.FW_SEMIBOLD);
         s_borderPen = Native.CreatePen(Native.PS_SOLID, 1, Program.Blend(0x00FFFFFF, BG, 0.10));
-        s_tooltipPen = Native.CreatePen(Native.PS_SOLID, 1, Program.Blend(0x00FFFFFF, BG, 0.18));
     }
 
     private static nint MakeFont(int px, int weight) => Native.CreateFontW(
@@ -233,9 +231,9 @@ internal static class CalendarPopup
                 return 0;
 
             case Native.WM_DESTROY:
-                foreach (nint h in new[] { s_fontRegular, s_fontSmall, s_fontTitle, s_borderPen, s_tooltipPen })
+                foreach (nint h in new[] { s_fontRegular, s_fontSmall, s_fontTitle, s_borderPen })
                     if (h != default) Native.DeleteObject(h);
-                s_fontRegular = s_fontSmall = s_fontTitle = s_borderPen = s_tooltipPen = default;
+                s_fontRegular = s_fontSmall = s_fontTitle = s_borderPen = default;
                 s_hwnd = default;
                 return 0;
 
@@ -449,18 +447,28 @@ internal static class CalendarPopup
         Native.SetTextColor(dc, statusColor);
         DrawText(dc, status, m.Pad + Program.S(7) * 2, m.FooterY, Native.DT_LEFT);
 
-        int monthTests = 0, monthDays = 0;
-        foreach (var kv in st.ByDay)
+        string? footerDetail = null;
+        if (s_hoverCell >= 0)
         {
-            if (kv.Key.Year == s_viewMonth.Year && kv.Key.Month == s_viewMonth.Month && kv.Value > 0) { monthTests += kv.Value; monthDays++; }
+            DateTime d = start.AddDays(s_hoverCell);
+            int count = st.ByDay.TryGetValue(d, out int c) ? c : 0;
+            footerDetail = $"{d:ddd, MMM d}: {count} test{(count == 1 ? "" : "s")}";
         }
-        if (st.HasData && !st.IsStreakOnly)
+        else if (st.HasData && !st.IsStreakOnly)
         {
-            Native.SetTextColor(dc, DIM);
-            string totals = monthTests == 0
+            int monthTests = 0, monthDays = 0;
+            foreach (var kv in st.ByDay)
+            {
+                if (kv.Key.Year == s_viewMonth.Year && kv.Key.Month == s_viewMonth.Month && kv.Value > 0) { monthTests += kv.Value; monthDays++; }
+            }
+            footerDetail = monthTests == 0
                 ? $"{s_viewMonth:MMMM}: no tests"
                 : $"{s_viewMonth:MMMM}: {monthTests:N0} test{(monthTests == 1 ? "" : "s")} on {monthDays} active day{(monthDays == 1 ? "" : "s")}";
-            DrawText(dc, totals, m.Pad, m.FooterY + Program.S(18) + Program.S(2), Native.DT_LEFT);
+        }
+        if (footerDetail is not null)
+        {
+            Native.SetTextColor(dc, DIM);
+            DrawText(dc, footerDetail, m.Pad, m.FooterY + Program.S(18) + Program.S(2), Native.DT_LEFT);
         }
 
         // ---- Border ------------------------------------------------------------------------------------
@@ -468,29 +476,6 @@ internal static class CalendarPopup
         _ = Native.SelectObject(dc, Native.GetStockObject(Native.NULL_BRUSH));
         _ = Native.Rectangle(dc, 0, 0, w, h);
 
-        // ---- Hover tooltip -------------------------------------------------------------------------------
-        if (s_hoverCell >= 0)
-        {
-            DateTime d = start.AddDays(s_hoverCell);
-            int count = st.ByDay.TryGetValue(d, out int c) ? c : 0;
-            string tip = $"{d:ddd, MMM d}: {count} test{(count == 1 ? "" : "s")}";
-            _ = Native.SelectObject(dc, s_fontSmall);
-            Native.SIZE ts = Measure(dc, tip);
-            int padX = Program.S(9), padY = Program.S(5);
-            int tw = ts.cx + padX * 2, th = ts.cy + padY * 2;
-            int cx = m.Pad + (s_hoverCell % 7) * m.CellW + m.CellW / 2;
-            int cellTop = m.GridY + (s_hoverCell / 7) * m.CellH;
-            int tx = Math.Clamp(cx - tw / 2, m.Pad, w - m.Pad - tw);
-            int ty = cellTop - th - Program.S(2);
-            if (ty < m.WeekdayY) ty = cellTop + m.CellH + Program.S(2);
-
-            using (var g = new Gdip.Surface(dc))
-            {
-                g.FillRoundRect(Program.Blend(0x00FFFFFF, BG, 0.16), tx, ty, tw, th, Program.S(6));
-            }
-            Native.SetTextColor(dc, TEXT);
-            DrawText(dc, tip, tx + padX, ty + padY, Native.DT_LEFT);
-        }
     }
 
     private static void DrawNavButton(Gdip.Surface g, Native.RECT r, bool up, bool enabled, bool hovered)

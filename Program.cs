@@ -415,7 +415,7 @@ internal static class Program
         TryRegisterHotKey(HK_REFRESH, s_settings.HotkeyRefresh, 'R');
         TryRegisterHotKey(HK_OPEN, s_settings.HotkeyOpenMonkeytype, 'M');
         TryRegisterHotKey(HK_PROFILE, s_settings.HotkeyOpenProfile, 'P');
-        TryRegisterHotKey(HK_TOGGLE_BAR, s_settings.HotkeyToggleBar, 'H');
+        TryRegisterHotKey(HK_TOGGLE_BAR, s_settings.HotkeyToggleBar, 'B');
     }
 
     private static void TryRegisterHotKey(int id, string? spec, char fallbackKey)

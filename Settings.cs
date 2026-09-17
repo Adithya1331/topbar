@@ -35,7 +35,7 @@ internal sealed class Settings
     public string HotkeyOpenMonkeytype { get; set; } = "Win+Shift+M";
     public string HotkeyOpenProfile { get; set; } = "Win+Shift+P";
     /// <summary>Hides/shows the whole bar (e.g. for fullscreen video). Works while hidden too.</summary>
-    public string HotkeyToggleBar { get; set; } = "Win+Shift+H";
+    public string HotkeyToggleBar { get; set; } = "Win+Shift+B";
 
     /// <summary>
     /// Monkeytype streak-day boundary, in hours relative to UTC midnight (the account's
@@ -71,6 +71,10 @@ internal sealed class Settings
         StreakWarnHours = Math.Clamp(StreakWarnHours, 1, 12);
         UpdateMode = Math.Clamp(UpdateMode, 0, 2);
         if (RightClickAction != "profile") RightClickAction = "homepage";
+        // Win+Shift+H is used by PowerToys Mouse Highlighter. Migrate the old default so
+        // existing installations get the conflict-free shortcut too.
+        if (string.Equals(HotkeyToggleBar, "Win+Shift+H", StringComparison.OrdinalIgnoreCase))
+            HotkeyToggleBar = "Win+Shift+B";
     }
 
     public static Settings Load()
